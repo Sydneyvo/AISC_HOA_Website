@@ -17,7 +17,7 @@ router.post('/analyze', upload.single('file'), async (req, res) => {
     const mimeType   = req.file.mimetype;
 
     // 1. Upload violation photo to Azure Blob
-    const image_url = await uploadToBlob(fileBuffer, req.file.originalname, 'violations');
+    const image_url = await uploadToBlob(fileBuffer, req.file.originalname, 'violationscont');
 
     // 2. Get this property's rules text (already extracted at PDF upload time)
     const propResult = await db.query(
@@ -56,15 +56,20 @@ router.post('/', async (req, res) => {
     );
     const violation = rows[0];
 
-    // 2. Send email if requested
+    // 2. Send email if requested (failure is non-fatal — violation is already saved)
     if (send_email) {
-      const propResult = await db.query(`SELECT * FROM properties WHERE id = $1`, [property_id]);
-      const property   = propResult.rows[0];
-      await sendViolationNotice({ property, violation });
-      await db.query(
-        `UPDATE violations SET notice_sent_at = NOW() WHERE id = $1`, [violation.id]
-      );
-      violation.notice_sent_at = new Date();
+      try {
+        const propResult = await db.query(`SELECT * FROM properties WHERE id = $1`, [property_id]);
+        const property   = propResult.rows[0];
+        await sendViolationNotice({ property, violation });
+        await db.query(
+          `UPDATE violations SET notice_sent_at = NOW() WHERE id = $1`, [violation.id]
+        );
+        violation.notice_sent_at = new Date();
+      } catch (emailErr) {
+        console.error('Email send failed (violation saved):', emailErr.message);
+        violation.email_error = emailErr.message;
+      }
     }
 
     // 3. Recalculate compliance score
@@ -75,6 +80,56 @@ router.post('/', async (req, res) => {
   } catch (err) {
     console.error('Save violation error:', err);
     res.status(500).json({ error: 'Failed to save violation', details: err.message });
+  }
+});
+
+// GET /api/violations/:id
+router.get('/:id', async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT * FROM violations WHERE id = $1`, [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Violation not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/violations/:id
+// Edit fields of an existing violation + optionally send notice
+router.patch('/:id', async (req, res) => {
+  try {
+    const { category, severity, description, rule_cited, remediation, deadline_days, send_email } = req.body;
+
+    const { rows } = await db.query(
+      `UPDATE violations
+       SET category = $1, severity = $2, description = $3,
+           rule_cited = $4, remediation = $5, deadline_days = $6
+       WHERE id = $7 RETURNING *`,
+      [category, severity, description, rule_cited, remediation, deadline_days, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Violation not found' });
+    const violation = rows[0];
+
+    if (send_email) {
+      try {
+        const propResult = await db.query(`SELECT * FROM properties WHERE id = $1`, [violation.property_id]);
+        const property   = propResult.rows[0];
+        await sendViolationNotice({ property, violation });
+        await db.query(`UPDATE violations SET notice_sent_at = NOW() WHERE id = $1`, [violation.id]);
+        violation.notice_sent_at = new Date();
+      } catch (emailErr) {
+        console.error('Email send failed (violation saved):', emailErr.message);
+        violation.email_error = emailErr.message;
+      }
+    }
+
+    await recalculateScore(violation.property_id);
+    res.json(violation);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -2,6 +2,7 @@ import { Routes, Route } from 'react-router-dom';
 import Dashboard      from './pages/Dashboard';
 import PropertyDetail from './pages/PropertyDetail';
 import ViolationForm  from './pages/ViolationForm';
+import ViolationEdit  from './pages/ViolationEdit';
 
 export default function App() {
   return (
@@ -12,7 +13,8 @@ export default function App() {
       <Routes>
         <Route path="/"                              element={<Dashboard />} />
         <Route path="/properties/:id"                element={<PropertyDetail />} />
-        <Route path="/properties/:id/violations/new" element={<ViolationForm />} />
+        <Route path="/properties/:id/violations/new"           element={<ViolationForm />} />
+        <Route path="/properties/:id/violations/:violId/edit" element={<ViolationEdit />} />
       </Routes>
     </div>
   );

@@ -19,6 +19,16 @@ export const getProperty = (id) =>
 export const resolveViolation = (id) =>
   fetch(`${BASE}/api/violations/${id}/resolve`, { method: 'PATCH' }).then(json);
 
+export const getViolation = (id) =>
+  fetch(`${BASE}/api/violations/${id}`).then(json);
+
+export const updateViolation = (id, data) =>
+  fetch(`${BASE}/api/violations/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  }).then(json);
+
 // Screen 3 — uses FormData (NOT JSON) because we're uploading a file
 export const analyzeViolation = (file, propertyId, hint = '') => {
   const form = new FormData();

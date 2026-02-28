@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { resolveViolation } from '../api';
 
 const SEVERITY_STYLES = {
@@ -39,24 +40,32 @@ export default function ViolationRow({ violation, onResolved }) {
         </span>
       </td>
       <td className="py-3 px-4">
-        {violation.status === 'open' && (
-          <button
-            onClick={handleResolve}
+        <div className="flex items-center gap-3 flex-wrap">
+          <Link
+            to={`/properties/${violation.property_id}/violations/${violation.id}/edit`}
             className="text-sm text-blue-600 hover:underline font-medium"
           >
-            Mark Resolved
-          </button>
-        )}
-        {violation.image_url && (
-          <a
-            href={violation.image_url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs text-gray-400 hover:underline ml-2"
-          >
-            Photo
-          </a>
-        )}
+            Edit
+          </Link>
+          {violation.status === 'open' && (
+            <button
+              onClick={handleResolve}
+              className="text-sm text-gray-500 hover:underline"
+            >
+              Resolve
+            </button>
+          )}
+          {violation.image_url && (
+            <a
+              href={violation.image_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-gray-400 hover:underline"
+            >
+              Photo
+            </a>
+          )}
+        </div>
       </td>
     </tr>
   );

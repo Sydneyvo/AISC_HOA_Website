@@ -69,7 +69,7 @@ router.delete('/:id', async (req, res) => {
       `SELECT rules_pdf_url FROM properties WHERE id = $1`, [req.params.id]
     );
     if (rows[0]?.rules_pdf_url) {
-      await deleteBlob(rows[0].rules_pdf_url, 'documents');
+      await deleteBlob(rows[0].rules_pdf_url, 'documentscont');
     }
     await db.query(`DELETE FROM properties WHERE id = $1`, [req.params.id]);
     res.json({ success: true });
@@ -103,11 +103,11 @@ router.post('/:id/rules-pdf', upload.single('file'), async (req, res) => {
 
     // Different file: delete the old blob from Azure (if one exists)
     if (current.rules_pdf_url) {
-      await deleteBlob(current.rules_pdf_url, 'documents');
+      await deleteBlob(current.rules_pdf_url, 'documentscont');
     }
 
     // Upload new PDF to Azure Blob
-    const newPdfUrl = await uploadToBlob(newBuffer, req.file.originalname, 'documents');
+    const newPdfUrl = await uploadToBlob(newBuffer, req.file.originalname, 'documentscont');
 
     // Extract text from the new PDF (done once here, stored in DB)
     const newRulesText = await extractPdfText(newBuffer);

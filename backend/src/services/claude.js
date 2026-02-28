@@ -1,7 +1,3 @@
-const Anthropic = require('@anthropic-ai/sdk');
-const client = new Anthropic();  // automatically reads ANTHROPIC_API_KEY from env
-
-// Fallback used only if a property has no PDF uploaded yet
 const DEFAULT_HOA_RULES = `
 GENERAL HOA RULES (FALLBACK)
 
@@ -24,18 +20,13 @@ No shed, pergola, fence, or permanent structure may be added without prior HOA b
 
 const VALID_CATEGORIES = ['parking', 'garbage', 'lawn', 'exterior', 'structure', 'other'];
 
-// hoaRulesText comes from the property's rules_text DB column (extracted from their PDF)
 async function analyzeViolation(imageBuffer, mimeType = 'image/jpeg', hoaRulesText, hint = '') {
-  const base64Image = imageBuffer.toString('base64');
   const rulesContext = hoaRulesText || DEFAULT_HOA_RULES;
+  const base64 = imageBuffer.toString('base64');
 
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
-    system: `You are an HOA compliance assistant. Analyze property photos for rule violations
-based on the HOA rulebook below.
+  const promptText = `You are an HOA compliance assistant. Analyze this property photo for rule violations based on the rulebook below.
 
-Respond with ONLY a valid JSON object — no explanation, no markdown fences, just raw JSON.
+Output ONLY a JSON object — no markdown, no explanation, no code fences.
 
 Required fields:
 {
@@ -48,32 +39,52 @@ Required fields:
   "deadline_days": 7 for minor, 14 for standard, 30 for major — or null
 }
 
-Severity guide:
-- low: minor, easy to fix, no structural concern (e.g. trash bin out)
-- medium: ongoing neglect, visible from street (e.g. overgrown lawn)
-- high: structural, safety, or major rule violation (e.g. unapproved structure)
+Severity: low=minor fix, medium=ongoing neglect, high=structural/safety.
 
 HOA RULEBOOK:
-${rulesContext}`,
-    messages: [{
-      role: 'user',
-      content: [
+${rulesContext}
+
+${hint ? `Admin note: "${hint}"` : ''}`;
+
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'google/gemma-3-4b-it:free',
+      max_tokens: 512,
+      messages: [
         {
-          type: 'image',
-          source: { type: 'base64', media_type: mimeType, data: base64Image }
-        },
-        {
-          type: 'text',
-          text: hint
-            ? `Analyze this property photo for HOA violations. Admin note: "${hint}"`
-            : 'Analyze this property photo for HOA violations.'
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: { url: `data:${mimeType};base64,${base64}` }
+            },
+            {
+              type: 'text',
+              text: promptText
+            }
+          ]
         }
       ]
-    }]
+    })
   });
 
-  const text = response.content[0].text.trim();
-  return JSON.parse(text);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OpenRouter error: ${err}`);
+  }
+
+  const data = await res.json();
+  const raw = data.choices?.[0]?.message?.content;
+  if (!raw) throw new Error(`Model returned no content. Response: ${JSON.stringify(data).slice(0, 300)}`);
+
+  // Strip markdown code fences if present (```json ... ``` or ``` ... ```)
+  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  return JSON.parse(cleaned);
 }
 
 module.exports = { analyzeViolation, DEFAULT_HOA_RULES };
