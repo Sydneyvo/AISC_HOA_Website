@@ -1,5 +1,5 @@
 # HOA Admin Dashboard — Technical Specification
-**Version:** 1.0 | **Stack:** React + Express.js + PostgreSQL + Claude API + Resend
+**Version:** 2.0 | **Stack:** React + Express.js + PostgreSQL + Claude API + Azure Blob Storage + Resend
 
 ---
 
@@ -10,11 +10,12 @@
 4. [Folder & File Structure](#4-folder--file-structure)
 5. [Environment Variables](#5-environment-variables)
 6. [The Claude AI Prompt](#6-the-claude-ai-prompt)
-7. [The Email Template](#7-the-email-template)
-8. [Screen-by-Screen Breakdown](#8-screen-by-screen-breakdown)
-9. [Data Flow: Full Violation Walkthrough](#9-data-flow-full-violation-walkthrough)
-10. [Compliance Score Formula](#10-compliance-score-formula)
-11. [Assumptions & Open Questions](#11-assumptions--open-questions)
+7. [Azure Blob Image Upload](#7-azure-blob-image-upload)
+8. [The Email Template](#8-the-email-template)
+9. [Screen-by-Screen Breakdown](#9-screen-by-screen-breakdown)
+10. [Data Flow: Full Violation Walkthrough](#10-data-flow-full-violation-walkthrough)
+11. [Compliance Score Formula](#11-compliance-score-formula)
+12. [Open Questions](#12-open-questions)
 
 ---
 
@@ -23,174 +24,207 @@
 Three screens, one core loop:
 
 ```
-[Screen 1: Properties List]
+[Screen 1: Dashboard — all properties + community violations graph]
   → Click a property →
-[Screen 2: Property Detail]
+[Screen 2: Property Detail — property info + violation history table]
   → Click "Report Violation" →
-[Screen 3: Violation Form]
-  → Upload photo → AI fills form → Admin reviews → Submit → Email sent
+[Screen 3: Violation Form — upload photo → AI fills form → send email]
 ```
-
-That's it. Everything else (the score, the history, the graph) lives on Screen 2 and updates automatically as violations are logged.
 
 ---
 
 ## 2. Database Schema (PostgreSQL)
 
-Two tables. That's all you need.
+### Why Two Separate Tables (Not Embedded)
+
+Your sketch had the right instinct — a "compliance tracker" lives under each property. But in SQL, you **never store a list of things inside a row**. Instead, violations live in their own table and each violation row has a `property_id` column that points back to which property it belongs to. This is called a **foreign key**.
+
+Think of it like this:
+
+```
+properties table                    violations table
+─────────────────────               ─────────────────────────────────────
+id │ address        │ score         id │ property_id │ category │ status
+───┼────────────────┼──────         ───┼─────────────┼──────────┼───────
+ 1 │ 123 Maple St   │  80            1 │      1      │ garbage  │ open      ← belongs to property 1
+ 2 │ 456 Oak Ave    │ 100            2 │      1      │ lawn     │ resolved  ← also property 1
+ 3 │ 789 Pine Rd    │  65            3 │      3      │ parking  │ open      ← belongs to property 3
+```
+
+To get all violations for 123 Maple St (id=1), you run:
+```sql
+SELECT * FROM violations WHERE property_id = 1;
+```
+
+That's it. One line. You never need to put violations inside the properties row. This is the standard, correct, and efficient way to do this in any relational database.
+
+---
 
 ### Table 1: `properties`
 
-This maps to your "Property" schema from the sketch.
-
 ```sql
 CREATE TABLE properties (
-  id                SERIAL PRIMARY KEY,
-  address           VARCHAR(255) NOT NULL,
-  owner_name        VARCHAR(255) NOT NULL,      -- "tenant names" on sketch — see note below
-  owner_email       VARCHAR(255) NOT NULL,
-  owner_phone       VARCHAR(50),
-  resident_since    INTEGER,                    -- year they moved in, e.g. 2019
-  compliance_score  INTEGER DEFAULT 100,        -- 0–100, recalculated on each new/resolved violation
-  created_at        TIMESTAMP DEFAULT NOW()
+  id               SERIAL PRIMARY KEY,
+  address          VARCHAR(255) NOT NULL,
+  owner_name       VARCHAR(255) NOT NULL,
+  owner_email      VARCHAR(255) NOT NULL,
+  owner_phone      VARCHAR(50),
+  resident_since   INTEGER,              -- year they moved in, e.g. 2019
+  compliance_score INTEGER DEFAULT 100, -- 0–100, recalculated automatically
+  created_at       TIMESTAMP DEFAULT NOW()
 );
 ```
-
-> **Note on "tenant names":** In HOA context, the person receiving violations is typically the **property owner**, even if they rent it out. We're calling this `owner_name`. If you want to store a separate renter contact, that can be added later. For the MVP, one contact per property is enough.
 
 ### Table 2: `violations`
 
-This maps to your "Compliance Tracker" schema from the sketch.
-
 ```sql
 CREATE TABLE violations (
-  id              SERIAL PRIMARY KEY,
-  property_id     INTEGER REFERENCES properties(id) ON DELETE CASCADE,
+  id             SERIAL PRIMARY KEY,
+  property_id    INTEGER NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
 
-  -- Core violation info (filled by Claude, editable by admin)
-  category        VARCHAR(100) NOT NULL,        -- see category list below
-  severity        VARCHAR(10) NOT NULL          -- 'low', 'medium', 'high'
-                  CHECK (severity IN ('low', 'medium', 'high')),
-  description     TEXT NOT NULL,               -- Claude writes this, admin can edit
-  rule_cited      TEXT,                         -- which HOA rule was broken
-  remediation     TEXT,                         -- what the homeowner needs to do
-  deadline_days   INTEGER DEFAULT 14,          -- days to fix it
+  -- Violation details (AI-generated, admin-editable)
+  category       VARCHAR(100) NOT NULL,
+  severity       VARCHAR(10)  NOT NULL CHECK (severity IN ('low', 'medium', 'high')),
+  description    TEXT         NOT NULL,
+  rule_cited     TEXT,
+  remediation    TEXT,
+  deadline_days  INTEGER DEFAULT 14,
 
-  -- Status tracking
-  status          VARCHAR(20) DEFAULT 'open'
-                  CHECK (status IN ('open', 'resolved')),
+  -- Status
+  status         VARCHAR(20) DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
 
-  -- Metadata
-  image_url       TEXT,                         -- URL to stored image (Cloudinary or Azure Blob)
-  notice_sent_at  TIMESTAMP,                    -- when email was actually sent
-  resolved_at     TIMESTAMP,                    -- when admin marked it resolved
-  created_at      TIMESTAMP DEFAULT NOW()
+  -- Image (stored in Azure Blob, we save the public URL)
+  image_url      TEXT,
+
+  -- Timestamps
+  notice_sent_at TIMESTAMP,  -- set when email is sent
+  resolved_at    TIMESTAMP,  -- set when admin marks resolved
+  created_at     TIMESTAMP DEFAULT NOW()
 );
 ```
 
-### Violation Categories (the "Constant List" from your sketch)
+> `ON DELETE CASCADE` means: if you ever delete a property, all its violations are automatically deleted too. This prevents orphaned records.
 
-These are the fixed categories the admin picks from (and Claude will also return one of these):
-
-```
-parking         → Unauthorized vehicle, RV, boat in driveway
-garbage         → Trash bins visible from street, improper disposal
-lawn            → Overgrown grass, dead landscaping, weeds
-exterior        → Peeling paint, broken shutters, damaged fence
-structure       → Unapproved shed, pergola, or modification
-noise           → (future use)
-other           → Catch-all for anything not listed
-```
-
-### The Relationship
+### Violation Categories
 
 ```
-properties (1) ──────< violations (many)
-     id                   property_id (foreign key)
+parking    → Unauthorized vehicle, RV, boat in driveway
+garbage    → Trash bins visible from street, improper disposal
+lawn       → Overgrown grass, dead landscaping, weeds
+exterior   → Peeling paint, broken shutters, damaged fence
+structure  → Unapproved shed, pergola, or modification
+other      → Catch-all
 ```
 
-One property can have many violations over time. Each violation knows which property it belongs to via `property_id`.
-
-### Seed Data (for development/demo)
+### Seed Data (paste this into your DB to have demo data immediately)
 
 ```sql
--- Insert a few test properties so the dashboard isn't empty
 INSERT INTO properties (address, owner_name, owner_email, owner_phone, resident_since)
 VALUES
-  ('123 Maple Street', 'John Smith', 'john@example.com', '555-0101', 2018),
-  ('456 Oak Avenue', 'Maria Garcia', 'maria@example.com', '555-0102', 2021),
-  ('789 Pine Road', 'David Lee', 'david@example.com', '555-0103', 2015);
+  ('123 Maple Street', 'John Smith',    'john@example.com',  '555-0101', 2018),
+  ('456 Oak Avenue',   'Maria Garcia',  'maria@example.com', '555-0102', 2021),
+  ('789 Pine Road',    'David Lee',     'david@example.com', '555-0103', 2015);
+
+INSERT INTO violations (property_id, category, severity, description, rule_cited, remediation, status, created_at)
+VALUES
+  (1, 'garbage',  'low',    'Trash bins visible from street.',           'Section 4.2', 'Store bins out of view.',       'open',     NOW() - INTERVAL '10 days'),
+  (1, 'lawn',     'medium', 'Grass exceeds 6 inches in front yard.',     'Section 3.1', 'Mow lawn to under 6 inches.',   'resolved', NOW() - INTERVAL '60 days'),
+  (3, 'parking',  'high',   'Boat on trailer parked in driveway >24hr.', 'Section 5.1', 'Remove or store off-property.', 'open',     NOW() - INTERVAL '3 days');
+
+-- Update scores to match seed violations
+UPDATE properties SET compliance_score = 95  WHERE id = 1;  -- 1 low open
+UPDATE properties SET compliance_score = 100 WHERE id = 2;  -- no violations
+UPDATE properties SET compliance_score = 80  WHERE id = 3;  -- 1 high open
 ```
 
 ---
 
 ## 3. API Routes
 
-All routes are prefixed with `/api`. The frontend calls these.
+All routes prefixed with `/api`.
 
 ### Properties
 
-| Method | Route | What it does | Request Body | Response |
+| Method | Route | What it does | Body | Response |
 |---|---|---|---|---|
-| GET | `/api/properties` | Get all properties, sorted by compliance score | — | Array of property objects |
-| GET | `/api/properties/:id` | Get one property + all its violations | — | Property + violations array |
-| POST | `/api/properties` | Add a new property | `{ address, owner_name, owner_email, owner_phone, resident_since }` | New property object |
+| `GET` | `/api/properties` | All properties + open violation count, sorted by score | — | `Property[]` |
+| `GET` | `/api/properties/:id` | One property + its full violations list | — | `Property & { violations: Violation[] }` |
+| `POST` | `/api/properties` | Create a new property | `{ address, owner_name, owner_email, owner_phone, resident_since }` | New `Property` |
 
 ### Violations
 
-| Method | Route | What it does | Request Body | Response |
+| Method | Route | What it does | Body | Response |
 |---|---|---|---|---|
-| POST | `/api/violations/analyze` | Send photo to Claude, get back filled form data | `{ property_id, image_base64, hint? }` | `{ category, severity, description, rule_cited, remediation, deadline_days }` |
-| POST | `/api/violations` | Save the violation + send email notice | `{ property_id, category, severity, description, rule_cited, remediation, deadline_days, image_url, send_email }` | New violation object |
-| PATCH | `/api/violations/:id/resolve` | Mark a violation as resolved | — | Updated violation object |
+| `POST` | `/api/violations/analyze` | Upload image → Azure Blob → Claude analysis | `multipart/form-data: { file, property_id, hint? }` | `{ image_url, category, severity, description, rule_cited, remediation, deadline_days }` |
+| `POST` | `/api/violations` | Save reviewed violation + send email | JSON (see below) | New `Violation` |
+| `PATCH` | `/api/violations/:id/resolve` | Mark resolved, update score | — | Updated `Violation` |
 
-### Route Details
+### Dashboard Endpoint (for the graph)
 
-#### `POST /api/violations/analyze`
-This is the AI step. It does NOT save anything to the database — it just returns the Claude analysis so the admin can review it first.
+| Method | Route | What it does | Response |
+|---|---|---|---|
+| `GET` | `/api/dashboard/violations-timeline` | All violations across all properties with date + severity | `{ date, severity, property_address, category }[]` |
 
-```javascript
-// Request
+This dedicated endpoint powers the community-wide graph on Screen 1. It returns every violation ever logged, with enough info to plot and color each dot.
+
+---
+
+### Detailed Request/Response Shapes
+
+#### `POST /api/violations/analyze` — multipart form upload
+
+```
+// Request (multipart/form-data — NOT JSON)
+file:        <image file from the browser>
+property_id: "1"
+hint:        "trash bins visible from street"  (optional)
+
+// Response (JSON)
 {
-  "property_id": 1,
-  "image_base64": "data:image/jpeg;base64,/9j/4AAQ...",
-  "hint": "trash bins out front"   // optional, admin can type a note
-}
-
-// Response
-{
-  "category": "garbage",
-  "severity": "low",
-  "description": "Trash bins are visible from the street on a non-collection day.",
-  "rule_cited": "Section 4.2 — Refuse containers must be stored out of street view except on collection days.",
-  "remediation": "Move trash bins to the side yard or garage before end of day.",
-  "deadline_days": 7
+  "image_url":    "https://yourblob.blob.core.windows.net/violations/abc123.jpg",
+  "category":     "garbage",
+  "severity":     "low",
+  "description":  "Trash bins are visible from the street on a non-collection day.",
+  "rule_cited":   "Section 4.2 — Refuse containers must be stored out of street view.",
+  "remediation":  "Move trash bins to the side yard or garage.",
+  "deadline_days": 7,
+  "violation_detected": true
 }
 ```
 
-#### `POST /api/violations`
-This saves the (admin-reviewed) violation and fires the email.
+The backend does three things in this one call:
+1. Receives the image file via multer
+2. Uploads it to Azure Blob Storage → gets the public URL
+3. Passes the image as base64 to Claude API → gets the analysis JSON
+4. Returns both the `image_url` AND the analysis together
+
+The frontend stores the `image_url` from this response. When the admin submits the reviewed form, it sends that URL — no re-upload needed.
+
+---
+
+#### `POST /api/violations` — save + send email
 
 ```javascript
-// Request
+// Request (JSON)
 {
-  "property_id": 1,
-  "category": "garbage",
-  "severity": "low",
-  "description": "Trash bins are visible from the street on a non-collection day.",
-  "rule_cited": "Section 4.2 — Refuse containers must be stored out of street view.",
-  "remediation": "Move trash bins to the side yard or garage before end of day.",
+  "property_id":  1,
+  "image_url":    "https://yourblob.blob.core.windows.net/violations/abc123.jpg",
+  "category":     "garbage",
+  "severity":     "low",
+  "description":  "Trash bins are visible from the street on a non-collection day.",
+  "rule_cited":   "Section 4.2 — Refuse containers must be stored out of street view.",
+  "remediation":  "Move trash bins to the side yard or garage.",
   "deadline_days": 7,
-  "image_url": "https://res.cloudinary.com/your-account/image/upload/v123/violations/abc.jpg",
-  "send_email": true   // false = save as draft without sending
+  "send_email":   true    // false = save as draft, no email sent
 }
 
-// Response
+// Response (JSON)
 {
-  "id": 42,
-  "property_id": 1,
-  "status": "open",
+  "id":             42,
+  "property_id":    1,
+  "status":         "open",
   "notice_sent_at": "2026-02-28T14:32:00Z",
+  "image_url":      "https://yourblob.blob.core.windows.net/violations/abc123.jpg",
   ...
 }
 ```
@@ -202,61 +236,73 @@ This saves the (admin-reviewed) violation and fires the email.
 ```
 hoa-dashboard/
 │
-├── frontend/                        ← Lovable-generated React app
+├── frontend/                          ← Lovable-generated React app
 │   ├── src/
 │   │   ├── pages/
-│   │   │   ├── Dashboard.jsx        ← Screen 1: All properties list
-│   │   │   ├── PropertyDetail.jsx   ← Screen 2: One property + violations
-│   │   │   └── ViolationForm.jsx    ← Screen 3: Upload photo + review form
+│   │   │   ├── Dashboard.jsx          ← Screen 1: properties list + community graph
+│   │   │   ├── PropertyDetail.jsx     ← Screen 2: property info + violations table
+│   │   │   └── ViolationForm.jsx      ← Screen 3: upload photo + review AI form
 │   │   ├── components/
-│   │   │   ├── PropertyCard.jsx     ← Card shown in the list
-│   │   │   ├── ViolationRow.jsx     ← Row in the violation history table
-│   │   │   ├── ComplianceScore.jsx  ← The score circle/badge
-│   │   │   └── ComplianceGraph.jsx  ← The trend graph (violations/year)
-│   │   ├── api.js                   ← All fetch() calls to the backend live here
+│   │   │   ├── PropertyCard.jsx       ← Individual card in the properties list
+│   │   │   ├── ViolationRow.jsx       ← Row in the violation history table
+│   │   │   ├── ComplianceScore.jsx    ← Colored score badge (green/yellow/red)
+│   │   │   └── ViolationsTimeline.jsx ← The scatter chart (see Section 9)
+│   │   ├── api.js                     ← All fetch() calls live here — see below
 │   │   └── App.jsx
-│   ├── .env                         ← VITE_API_URL=http://localhost:3001
+│   ├── .env
 │   └── package.json
 │
-├── backend/                         ← Express.js app
+├── backend/
 │   ├── src/
 │   │   ├── routes/
-│   │   │   ├── properties.js        ← GET/POST /api/properties
-│   │   │   └── violations.js        ← POST /api/violations/analyze, POST /api/violations
+│   │   │   ├── properties.js          ← GET /api/properties, GET /api/properties/:id, POST
+│   │   │   ├── violations.js          ← POST /analyze, POST /, PATCH /:id/resolve
+│   │   │   └── dashboard.js           ← GET /api/dashboard/violations-timeline
 │   │   ├── services/
-│   │   │   ├── claude.js            ← Claude API call logic lives here
-│   │   │   └── email.js             ← Resend email logic lives here
+│   │   │   ├── claude.js              ← Claude API call (image → JSON analysis)
+│   │   │   ├── azure.js               ← Azure Blob upload (file buffer → public URL)
+│   │   │   └── email.js               ← Resend email (property + violation → sends notice)
 │   │   ├── db/
-│   │   │   ├── index.js             ← PostgreSQL connection (pg pool)
-│   │   │   └── schema.sql           ← The SQL from Section 2 above
-│   │   └── index.js                 ← Express app entry point
-│   ├── .env                         ← All secrets (never commit this)
+│   │   │   ├── index.js               ← PostgreSQL connection pool
+│   │   │   └── schema.sql             ← CREATE TABLE statements from Section 2
+│   │   └── index.js                   ← Express app, registers routes, starts server
+│   ├── .env
 │   └── package.json
 │
-├── .gitignore                       ← Must include: node_modules, .env, *.env
+├── .gitignore
 └── README.md
 ```
 
-### The `api.js` file (frontend)
-
-All backend calls go through one file so the URL is never hardcoded in 10 places:
+### `frontend/src/api.js` — all backend calls in one place
 
 ```javascript
-// frontend/src/api.js
-const BASE = import.meta.env.VITE_API_URL;   // reads from .env
+const BASE = import.meta.env.VITE_API_URL;
 
+// Screen 1
 export const getProperties = () =>
   fetch(`${BASE}/api/properties`).then(r => r.json());
 
+export const getViolationsTimeline = () =>
+  fetch(`${BASE}/api/dashboard/violations-timeline`).then(r => r.json());
+
+// Screen 2
 export const getProperty = (id) =>
   fetch(`${BASE}/api/properties/${id}`).then(r => r.json());
 
-export const analyzeViolation = (data) =>
-  fetch(`${BASE}/api/violations/analyze`, {
+export const resolveViolation = (id) =>
+  fetch(`${BASE}/api/violations/${id}/resolve`, { method: 'PATCH' }).then(r => r.json());
+
+// Screen 3 — uses FormData (NOT JSON) because we're uploading a file
+export const analyzeViolation = (file, propertyId, hint = '') => {
+  const form = new FormData();
+  form.append('file', file);               // the actual image File object
+  form.append('property_id', propertyId);
+  form.append('hint', hint);
+  return fetch(`${BASE}/api/violations/analyze`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
+    body: form                             // no Content-Type header — browser sets it automatically
   }).then(r => r.json());
+};
 
 export const submitViolation = (data) =>
   fetch(`${BASE}/api/violations`, {
@@ -265,21 +311,31 @@ export const submitViolation = (data) =>
     body: JSON.stringify(data)
   }).then(r => r.json());
 
-export const resolveViolation = (id) =>
-  fetch(`${BASE}/api/violations/${id}/resolve`, { method: 'PATCH' }).then(r => r.json());
+export const createProperty = (data) =>
+  fetch(`${BASE}/api/properties`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  }).then(r => r.json());
 ```
+
+> **Why FormData for the analyze call?** Because you're uploading an actual file (binary image data), not plain text. JSON can't carry binary files. `FormData` is the standard way browsers send file uploads. You do NOT set a `Content-Type` header — the browser sets it automatically with the correct `multipart/form-data` boundary string.
 
 ---
 
 ## 5. Environment Variables
 
 ### Backend `.env`
-```
-# Database
-DATABASE_URL=postgresql://username:password@your-azure-host:5432/hoadb
+```bash
+# PostgreSQL (Azure Database for PostgreSQL)
+DATABASE_URL=postgresql://adminuser:password@your-server.postgres.database.azure.com:5432/hoadb
 
 # Claude API
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Azure Blob Storage
+AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...
+AZURE_BLOB_CONTAINER_NAME=violations
 
 # Resend Email
 RESEND_API_KEY=re_...
@@ -287,127 +343,105 @@ FROM_EMAIL=noreply@yourhoa.com
 
 # Server
 PORT=3001
+FRONTEND_URL=http://localhost:5173   # used for CORS — change to deployed URL later
 ```
 
 ### Frontend `.env`
-```
-# Points to your backend (change to Azure URL after deploy)
-VITE_API_URL=http://localhost:3001
-```
-
-### `.gitignore` (critical — add this before first commit)
-```
-node_modules/
-.env
-*.env
-.env.local
-dist/
+```bash
+VITE_API_URL=http://localhost:3001   # change to Azure App Service URL after deploy
 ```
 
-Share the actual secret values in your private group chat, never in GitHub.
+### Backend `package.json` dependencies to install
+```bash
+npm install express pg dotenv @anthropic-ai/sdk resend multer @azure/storage-blob cors
+```
+
+- `multer` — handles multipart file uploads in Express
+- `@azure/storage-blob` — Azure's official Node.js SDK
+- `cors` — allows the Lovable frontend (different port/domain) to call the backend
 
 ---
 
 ## 6. The Claude AI Prompt
 
-This is the most important piece of code in the whole app. It lives in `backend/src/services/claude.js`.
-
-### How it works
-
-You send Claude:
-1. A **system prompt** that contains the HOA rulebook and instructions on how to respond
-2. A **user message** that contains the photo (as base64) and optionally a hint from the admin
-
-Claude returns a **JSON object** with the filled form fields.
-
-### The code
+Lives in `backend/src/services/claude.js`. This receives the raw image buffer, converts it to base64, and calls Claude.
 
 ```javascript
-// backend/src/services/claude.js
 const Anthropic = require('@anthropic-ai/sdk');
-const client = new Anthropic();
+const client = new Anthropic();  // automatically reads ANTHROPIC_API_KEY from env
 
+// Replace this with your actual HOA rules document
 const HOA_RULES = `
-MAPLE GROVE HOA — COMMUNITY RULES SUMMARY
+MAPLE GROVE HOA — COMMUNITY RULES
 
 Section 3.1 — Lawn & Landscaping
-Grass must not exceed 6 inches in height. Dead plants, weeds, and overgrown 
-hedges must be addressed within 14 days of notice.
+Grass must not exceed 6 inches. Dead plants and weeds must be cleared within 14 days of notice.
 
 Section 4.2 — Refuse & Recycling
-Trash and recycling containers must be stored out of street view at all times 
-except on the designated collection day. Bins must be returned by 8pm on 
-collection day.
+Trash containers must be stored out of street view at all times except on collection day.
+Bins must be returned by 8pm on collection day.
 
 Section 5.1 — Vehicles & Parking
-No recreational vehicles, boats, trailers, or commercial vehicles may be 
-parked in driveways or on streets for more than 24 hours. All vehicles must 
-be registered and operable.
+No RVs, boats, trailers, or commercial vehicles may be parked in driveways for more than 24 hours.
 
 Section 6.3 — Exterior Maintenance
-Homes must be kept in good repair. This includes: paint (no peeling or 
-fading), gutters, shutters, fencing, and driveways. Visible damage must be 
-repaired within 30 days of notice.
+Homes must be kept in good repair: paint, gutters, shutters, fencing, driveways.
+Visible damage must be repaired within 30 days of notice.
 
 Section 7.1 — Unapproved Structures
-No shed, pergola, fence, satellite dish, or permanent structure may be added 
-without prior written approval from the HOA board.
+No shed, pergola, fence, or permanent structure may be added without prior HOA board approval.
 `;
-// ^ Replace this with your actual HOA rules
 
 const VALID_CATEGORIES = ['parking', 'garbage', 'lawn', 'exterior', 'structure', 'other'];
-const VALID_SEVERITIES = ['low', 'medium', 'high'];
 
-async function analyzeViolation(imageBase64, hint = '') {
+async function analyzeViolation(imageBuffer, mimeType = 'image/jpeg', hint = '') {
+  const base64Image = imageBuffer.toString('base64');
+
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1024,
-    system: `You are an HOA compliance assistant. You analyze photos of properties 
-and identify potential rule violations based on the HOA rulebook provided below.
+    system: `You are an HOA compliance assistant. Analyze property photos for rule violations 
+based on the HOA rulebook below.
 
-When given a photo, you must respond with ONLY a valid JSON object — no explanation, 
-no markdown, no extra text. Just the raw JSON.
+Respond with ONLY a valid JSON object — no explanation, no markdown fences, just raw JSON.
 
-The JSON must have exactly these fields:
+Required fields:
 {
-  "category": one of [${VALID_CATEGORIES.join(', ')}],
-  "severity": one of [${VALID_SEVERITIES.join(', ')}],
-  "description": "2-3 sentence plain English description of what you see in the photo",
-  "rule_cited": "The relevant rule section and text from the HOA rules, or null if none applies",
-  "remediation": "What the homeowner needs to do to fix this",
-  "deadline_days": a number (7 for minor, 14 for standard, 30 for major repairs),
-  "violation_detected": true or false
+  "violation_detected": true or false,
+  "category": one of [${VALID_CATEGORIES.join(', ')}] or null,
+  "severity": "low", "medium", or "high" — or null if no violation,
+  "description": "2-3 sentence plain English description of what you see",
+  "rule_cited": "Section X.X — exact rule text" or null,
+  "remediation": "Specific steps the homeowner must take" or null,
+  "deadline_days": 7 for minor, 14 for standard, 30 for major — or null
 }
 
-If no violation is detected, set violation_detected to false and fill other fields with null.
+Severity guide:
+- low: minor, easy to fix, no structural concern (e.g. trash bin out)
+- medium: ongoing neglect, visible from street (e.g. overgrown lawn)
+- high: structural, safety, or major rule violation (e.g. unapproved structure)
 
 HOA RULEBOOK:
 ${HOA_RULES}`,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: 'image/jpeg',
-              data: imageBase64.replace(/^data:image\/\w+;base64,/, '')
-            }
-          },
-          {
-            type: 'text',
-            text: hint
-              ? `Analyze this property photo for HOA violations. Admin note: "${hint}"`
-              : 'Analyze this property photo for HOA violations.'
-          }
-        ]
-      }
-    ]
+    messages: [{
+      role: 'user',
+      content: [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: mimeType, data: base64Image }
+        },
+        {
+          type: 'text',
+          text: hint
+            ? `Analyze this property photo for HOA violations. Admin note: "${hint}"`
+            : 'Analyze this property photo for HOA violations.'
+        }
+      ]
+    }]
   });
 
   const text = response.content[0].text.trim();
-  return JSON.parse(text);  // Claude returns raw JSON per our instructions
+  return JSON.parse(text);
 }
 
 module.exports = { analyzeViolation };
@@ -415,74 +449,166 @@ module.exports = { analyzeViolation };
 
 ---
 
-## 7. The Email Template
+## 7. Azure Blob Image Upload
 
-Lives in `backend/src/services/email.js`. Uses Resend to send a formatted HTML email to the homeowner.
+Lives in `backend/src/services/azure.js`.
+
+```javascript
+const { BlobServiceClient } = require('@azure/storage-blob');
+const { v4: uuidv4 } = require('uuid');  // npm install uuid
+
+const blobServiceClient = BlobServiceClient.fromConnectionString(
+  process.env.AZURE_STORAGE_CONNECTION_STRING
+);
+
+async function uploadViolationImage(fileBuffer, originalFilename) {
+  const containerClient = blobServiceClient.getContainerClient(
+    process.env.AZURE_BLOB_CONTAINER_NAME  // "violations"
+  );
+
+  // Generate a unique filename so nothing ever gets overwritten
+  const extension = originalFilename.split('.').pop();           // e.g. "jpg"
+  const blobName = `${uuidv4()}.${extension}`;                   // e.g. "f3a9b2c1-....jpg"
+
+  const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+
+  await blockBlobClient.upload(fileBuffer, fileBuffer.length, {
+    blobHTTPHeaders: { blobContentType: `image/${extension}` }
+  });
+
+  // Return the public URL — make sure "violations" container has public blob access
+  return blockBlobClient.url;
+}
+
+module.exports = { uploadViolationImage };
+```
+
+### How the analyze route uses both services
+
+```javascript
+// backend/src/routes/violations.js (the /analyze route)
+const multer = require('multer');
+const { analyzeViolation } = require('../services/claude');
+const { uploadViolationImage } = require('../services/azure');
+
+const upload = multer({ storage: multer.memoryStorage() }); // keep file in memory, not disk
+
+router.post('/analyze', upload.single('file'), async (req, res) => {
+  try {
+    const { property_id, hint } = req.body;
+    const fileBuffer = req.file.buffer;
+    const mimeType = req.file.mimetype;       // e.g. "image/jpeg"
+    const originalName = req.file.originalname;
+
+    // Step 1: Upload to Azure Blob, get back the public URL
+    const image_url = await uploadViolationImage(fileBuffer, originalName);
+
+    // Step 2: Send to Claude for analysis
+    const analysis = await analyzeViolation(fileBuffer, mimeType, hint || '');
+
+    // Return both together — frontend stores image_url for the final submit step
+    res.json({ image_url, ...analysis });
+
+  } catch (err) {
+    console.error('Analyze error:', err);
+    res.status(500).json({ error: 'Analysis failed', details: err.message });
+  }
+});
+```
+
+### Azure Setup Steps (for Person 4)
+
+1. In the Azure Portal, create a **Storage Account** under your student subscription
+2. Inside it, create a **Blob Container** named `violations`
+3. Set the container's **Access Level** to "Blob (anonymous read access for blobs only)" — this makes images publicly accessible via URL so they can appear in emails
+4. Copy the **Connection String** from the Storage Account → Access Keys section
+5. Paste it into the backend `.env` as `AZURE_STORAGE_CONNECTION_STRING`
+
+---
+
+## 8. The Email Template
+
+Lives in `backend/src/services/email.js`.
 
 ```javascript
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+const severityConfig = {
+  low:    { color: '#16a34a', label: 'LOW',    border: '#bbf7d0' },
+  medium: { color: '#d97706', label: 'MEDIUM', border: '#fde68a' },
+  high:   { color: '#dc2626', label: 'HIGH',   border: '#fecaca' }
+};
+
 async function sendViolationNotice({ property, violation }) {
-  const deadline = new Date();
+  const sev = severityConfig[violation.severity] || severityConfig.low;
+
+  const deadline = new Date(violation.created_at || Date.now());
   deadline.setDate(deadline.getDate() + violation.deadline_days);
   const deadlineStr = deadline.toLocaleDateString('en-US', {
     year: 'numeric', month: 'long', day: 'numeric'
   });
 
-  const severityColor = {
-    low: '#f59e0b',
-    medium: '#f97316',
-    high: '#ef4444'
-  }[violation.severity];
-
   const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-      <div style="background: #1e3a5f; padding: 24px; color: white;">
-        <h1 style="margin: 0; font-size: 20px;">HOA Compliance Notice</h1>
-        <p style="margin: 4px 0 0; opacity: 0.8;">${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;">
+
+      <div style="background:#1e3a5f;padding:24px 32px;color:white;">
+        <h1 style="margin:0;font-size:20px;font-weight:bold;">HOA Compliance Notice</h1>
+        <p style="margin:6px 0 0;opacity:0.75;font-size:14px;">
+          ${new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' })}
+        </p>
       </div>
 
-      <div style="padding: 24px; background: #f9fafb;">
-        <p>Dear ${property.owner_name},</p>
-        <p>This notice is to inform you of a compliance issue identified at your property:</p>
-        <p style="font-weight: bold;">${property.address}</p>
+      <div style="padding:28px 32px;background:#f9fafb;">
+        <p style="margin:0 0 8px;">Dear <strong>${property.owner_name}</strong>,</p>
+        <p style="margin:0 0 20px;">A compliance issue has been identified at:</p>
+        <p style="margin:0 0 24px;font-size:16px;font-weight:bold;color:#1e3a5f;">${property.address}</p>
 
-        <div style="background: white; border-left: 4px solid ${severityColor}; padding: 16px; margin: 16px 0; border-radius: 4px;">
-          <p style="margin: 0 0 8px; font-size: 12px; text-transform: uppercase; color: #6b7280;">Violation Type</p>
-          <p style="margin: 0; font-size: 18px; font-weight: bold;">${violation.category.charAt(0).toUpperCase() + violation.category.slice(1)}</p>
-          <span style="background: ${severityColor}; color: white; font-size: 11px; padding: 2px 8px; border-radius: 999px; display: inline-block; margin-top: 4px;">
-            ${violation.severity.toUpperCase()} SEVERITY
+        <div style="background:white;border:1px solid ${sev.border};border-left:4px solid ${sev.color};padding:16px 20px;border-radius:6px;margin-bottom:24px;">
+          <p style="margin:0 0 4px;font-size:11px;text-transform:uppercase;color:#6b7280;letter-spacing:0.05em;">Violation</p>
+          <p style="margin:0 0 8px;font-size:18px;font-weight:bold;color:#111827;">
+            ${violation.category.charAt(0).toUpperCase() + violation.category.slice(1)}
+          </p>
+          <span style="background:${sev.color};color:white;font-size:11px;font-weight:bold;padding:3px 10px;border-radius:999px;">
+            ${sev.label} SEVERITY
           </span>
         </div>
 
-        <h3>What Was Observed</h3>
-        <p>${violation.description}</p>
+        <h3 style="margin:0 0 8px;color:#1e3a5f;">What Was Observed</h3>
+        <p style="margin:0 0 20px;color:#374151;">${violation.description}</p>
 
         ${violation.rule_cited ? `
-        <h3>Applicable Rule</h3>
-        <p style="background: #f3f4f6; padding: 12px; border-radius: 4px; font-style: italic;">${violation.rule_cited}</p>
-        ` : ''}
+        <h3 style="margin:0 0 8px;color:#1e3a5f;">Applicable Rule</h3>
+        <p style="margin:0 0 20px;background:white;border:1px solid #e5e7eb;padding:12px 16px;border-radius:6px;font-style:italic;color:#374151;">
+          ${violation.rule_cited}
+        </p>` : ''}
 
-        <h3>Required Action</h3>
-        <p>${violation.remediation}</p>
+        <h3 style="margin:0 0 8px;color:#1e3a5f;">Required Action</h3>
+        <p style="margin:0 0 20px;color:#374151;">${violation.remediation}</p>
 
-        <div style="background: #fef3c7; border: 1px solid #f59e0b; padding: 16px; border-radius: 4px; margin: 16px 0;">
-          <strong>Resolution Deadline: ${deadlineStr}</strong><br>
-          Please resolve this violation within ${violation.deadline_days} days of this notice.
+        <div style="background:#fffbeb;border:1px solid #fbbf24;padding:16px 20px;border-radius:6px;margin-bottom:24px;">
+          <p style="margin:0;font-weight:bold;color:#92400e;">
+            ⏱ Resolution Deadline: ${deadlineStr}
+          </p>
+          <p style="margin:6px 0 0;color:#92400e;font-size:14px;">
+            Please address this within ${violation.deadline_days} days of this notice date.
+          </p>
         </div>
 
         ${violation.image_url ? `
-        <h3>Photo on File</h3>
-        <img src="${violation.image_url}" alt="Violation photo" style="max-width: 100%; border-radius: 4px;" />
+        <h3 style="margin:0 0 8px;color:#1e3a5f;">Photo on File</h3>
+        <img src="${violation.image_url}" alt="Violation photo"
+          style="max-width:100%;border-radius:6px;border:1px solid #e5e7eb;margin-bottom:24px;" />
         ` : ''}
 
-        <p style="margin-top: 24px;">If you have questions or believe this notice was issued in error, please contact the HOA office.</p>
-        <p>Thank you for your cooperation.</p>
-        <p><strong>HOA Management</strong></p>
+        <p style="color:#374151;">
+          If you have questions or believe this notice was sent in error, please contact the HOA office.
+        </p>
+        <p style="color:#374151;">Thank you for your cooperation.</p>
+        <p style="font-weight:bold;color:#1e3a5f;">HOA Management</p>
       </div>
 
-      <div style="padding: 16px; background: #e5e7eb; text-align: center; font-size: 12px; color: #6b7280;">
+      <div style="padding:16px 32px;background:#f3f4f6;text-align:center;font-size:12px;color:#6b7280;">
         This is an official notice from your Homeowners Association.
       </div>
     </div>
@@ -501,173 +627,210 @@ module.exports = { sendViolationNotice };
 
 ---
 
-## 8. Screen-by-Screen Breakdown
-
-Based on your wireframe sketch, here is exactly what each screen should show and do.
+## 9. Screen-by-Screen Breakdown
 
 ### Screen 1: Properties Dashboard (`/`)
 
-**What the admin sees:**
-- Page header: "Your Properties" + an "Add Property" button
-- Sort/filter controls: by compliance score (high → low), by number of open violations
-- A list of property cards. Each card shows:
+This is the command center. The admin sees the health of the entire community at a glance.
+
+**Layout — two sections stacked:**
+
+**Top: Community Violations Timeline (the graph)**
+
+A scatter plot showing every violation ever logged across all properties, on a single timeline.
+
+```
+# Violations Timeline — All Properties
+
+●  ●        ●              ●     ●    ●
+        ●        ●    ●              ●
+──────────────────────────────────────────→ time
+Jan       Mar       Jun       Sep       Dec
+
+● = high severity (red)
+● = medium severity (orange)  
+● = low severity (green)
+```
+
+- **X-axis:** date (by month or week depending on data density)
+- **Y-axis:** not needed — all dots sit on the same horizontal band, spaced by date. This is a timeline/strip chart, not a bar chart.
+- **Each dot:** one violation. Hovering shows: property address, category, date, status (open/resolved)
+- **Color:** red = high, orange = medium, green = low
+- **Implementation:** Use [Recharts](https://recharts.org) `ScatterChart`. X is `new Date(v.created_at).getTime()`, Y is always `1` (or randomize slightly to avoid overlap). Color each dot with a custom `shape` prop.
+
+**Data source:** `GET /api/dashboard/violations-timeline`
+
+```javascript
+// What the endpoint returns
+[
+  { id: 1, created_at: "2026-01-10T...", severity: "low",    category: "garbage", property_address: "123 Maple St", status: "resolved" },
+  { id: 3, created_at: "2026-02-25T...", severity: "high",   category: "parking", property_address: "789 Pine Rd",  status: "open"     },
+  ...
+]
+```
+
+---
+
+**Bottom: Properties List**
+
+- Search bar and sort dropdown (by score, by open violations)
+- A card grid. Each card shows:
   - Address
   - Owner name
-  - Compliance score (color-coded: green ≥80, yellow 50–79, red <50)
+  - Compliance score badge — green (≥80), yellow (50–79), red (<50)
   - Number of open violations
-  - Last activity date
-
-**What it loads from the API:**
-```
-GET /api/properties
-```
+  - Date of most recent violation
+  - "View" button → navigates to Screen 2
 
 ---
 
 ### Screen 2: Property Detail (`/properties/:id`)
 
-**What the admin sees:**
-- Property header: address, owner name, email, phone, resident since year
-- Large compliance score display
-- A line graph showing **# violations per year** (x-axis: year, y-axis: count) — this is the "track how HOA is doing for all properties" graph from your sketch, but scoped per property at the MVP level
-- Two tabs: **Details** | **Records** (matches your sketch's "Details / Some" tabs)
-  - Details tab: property info, option to edit
-  - Records tab: table of all past violations (date, category, severity, status, action)
-- A prominent **"Report Violation"** button that navigates to Screen 3
+Focused view on a single property.
 
-**What it loads from the API:**
-```
-GET /api/properties/:id   → returns property + violations array
-```
+**Header section:**
+- Address (large), owner name, email, phone, resident since
+- Large compliance score circle — color matches score range
+- "Report Violation" button (primary, prominent)
+
+**Violations History Table:**
+
+| Date | Category | Severity | Description | Status | Action |
+|---|---|---|---|---|---|
+| Feb 28 | Garbage | 🟢 Low | Bins visible from street | Open | Mark Resolved |
+| Jan 12 | Lawn | 🟠 Medium | Grass over 6 inches | Resolved | — |
+
+- Severity shown as a colored pill
+- "Mark Resolved" button calls `PATCH /api/violations/:id/resolve`
+
+**What loads:** `GET /api/properties/:id` — returns the property row joined with all its violations.
 
 ---
 
 ### Screen 3: Violation Form (`/properties/:id/violations/new`)
 
-This is the most complex screen. It has two states:
+Two-state screen.
 
-**State A — Upload (before AI analysis):**
-- Photo upload box (drag & drop or click to select)
-- Optional text field: "Describe what you see (optional — helps the AI)"
-- Category dropdown — pre-select or let AI decide
+**State A — Upload**
+- Property address shown at top (admin sees which property they're filing for)
+- Drag-and-drop image upload zone
+- Optional hint field: "Briefly describe what you see (helps the AI)"
 - "Analyze Photo" button
 
-**State B — Review (after AI analysis):**
-- The photo is shown on the left (or top on mobile)
-- On the right, a form pre-filled by Claude with all fields editable:
-  - Category (dropdown, pre-selected)
-  - Severity (Low / Medium / High toggle)
-  - Description (text area)
-  - Rule Cited (text area)
-  - Remediation Steps (text area)
-  - Deadline (number input, default from AI)
-- "Send Notice" button → saves violation + sends email
-- "Save Without Sending" button → saves as draft, no email
+**State B — Review (after AI responds)**
+- Photo preview on the left
+- Pre-filled form on the right (all fields editable by admin):
+  - Category (dropdown)
+  - Severity (Low / Medium / High segmented control)
+  - Description (textarea)
+  - Rule Cited (textarea)
+  - Remediation Steps (textarea)
+  - Deadline in days (number input)
+- "Send Notice & Save" button → saves + emails homeowner
+- "Save Without Sending" button → saves, no email
+- "Re-analyze" link → go back to State A
 
-**Loading state between A and B:**
-Show a spinner with text "Analyzing photo..." — Claude takes 3–8 seconds.
+**Loading state (between A and B):**
+Spinner + "Analyzing photo with AI..." message. Claude typically takes 3–8 seconds.
 
 ---
 
-## 9. Data Flow: Full Violation Walkthrough
+## 10. Data Flow: Full Violation Walkthrough
 
 ```
-Step 1 — Admin opens Screen 3 (Violation Form)
-  Frontend navigates to /properties/1/violations/new
+Step 1 — Admin opens Screen 3
+  Navigates to /properties/1/violations/new
+  Frontend shows the upload zone
 
-Step 2 — Admin uploads a photo
-  Browser converts the image to base64 (using FileReader API)
-  Admin optionally types a note: "trash bins visible from driveway"
+Step 2 — Admin selects photo
+  Browser File object is ready in React state
+  Admin optionally types: "trash bins visible from driveway"
+  Admin clicks "Analyze Photo"
 
-Step 3 — Admin clicks "Analyze Photo"
-  Frontend calls: POST /api/violations/analyze
-  Body: { property_id: 1, image_base64: "data:image/jpeg;base64,...", hint: "trash bins..." }
+Step 3 — Frontend calls POST /api/violations/analyze
+  Uses FormData (not JSON) — appends: file, property_id, hint
+  Shows loading spinner
 
-Step 4 — Backend receives request
-  Extracts image and hint
-  Loads HOA_RULES from the string constant in claude.js
-  Calls Claude API with system prompt (rules) + user message (photo + hint)
-  Claude returns JSON: { category, severity, description, rule_cited, remediation, deadline_days }
-  Backend returns this JSON to the frontend
+Step 4 — Backend /analyze route runs
+  multer extracts file → buffer in memory
+  Calls uploadViolationImage(buffer, filename) → Azure Blob → returns public URL
+  Calls analyzeViolation(buffer, mimeType, hint) → Claude API → returns JSON
+  Returns: { image_url, category, severity, description, rule_cited, remediation, deadline_days }
 
-Step 5 — Frontend populates the form
-  All fields fill automatically from the Claude JSON
-  Admin reads it over, edits if needed
-  Admin selects tone (friendly/formal — just changes the email greeting style)
+Step 5 — Frontend populates form (State B)
+  Stores image_url in React state
+  Fills all form fields from Claude JSON
+  Admin reviews, edits anything needed
 
-Step 6 — Admin clicks "Send Notice"
-  Frontend calls: POST /api/violations
-  Body: { property_id: 1, category, severity, description, ..., send_email: true }
+Step 6 — Admin clicks "Send Notice & Save"
+  Frontend calls POST /api/violations (JSON body)
+  Body includes: all form fields + the image_url from Step 4
 
 Step 7 — Backend saves violation + sends email
-  INSERT INTO violations (...) VALUES (...)
-  Fetches property from DB to get owner_name, owner_email
-  Calls sendViolationNotice({ property, violation }) via Resend API
-  Updates notice_sent_at timestamp on the violation record
-  Recalculates and updates compliance_score on the property record
+  INSERT INTO violations (...) → gets new violation id
+  SELECT * FROM properties WHERE id = $1 → get owner_name, owner_email for email
+  Calls sendViolationNotice({ property, violation }) → Resend fires the email
+  UPDATE violations SET notice_sent_at = NOW() WHERE id = $newId
+  Recalculates compliance score (see Section 11)
   Returns the saved violation object
 
-Step 8 — Frontend updates UI
-  Navigates back to Property Detail screen
-  Shows the new violation in the records table
+Step 8 — Frontend navigates to Property Detail
+  Shows new violation in table
   Shows updated compliance score
 ```
 
 ---
 
-## 10. Compliance Score Formula
+## 11. Compliance Score Formula
 
-You had: *# violations/year & level → Compliance Score*. Here's a concrete formula:
+Recalculated after every new violation and after every `resolve`. Runs in the backend violations route — NOT in the database.
 
 ```javascript
-// Called after every violation INSERT or resolve PATCH
+// backend/src/routes/violations.js — call this after any INSERT or resolve PATCH
 
-function calculateComplianceScore(openViolations) {
-  // Each open violation reduces the score based on severity
-  const deductions = openViolations.reduce((total, v) => {
+async function recalculateScore(propertyId, db) {
+  const result = await db.query(
+    `SELECT severity FROM violations WHERE property_id = $1 AND status = 'open'`,
+    [propertyId]
+  );
+
+  const deductions = result.rows.reduce((total, v) => {
     if (v.severity === 'high')   return total + 20;
     if (v.severity === 'medium') return total + 10;
     if (v.severity === 'low')    return total + 5;
     return total;
   }, 0);
 
-  return Math.max(0, 100 - deductions);
-}
+  const newScore = Math.max(0, 100 - deductions);
 
-// Run this query, then call the function above:
-// SELECT * FROM violations WHERE property_id = $1 AND status = 'open'
+  await db.query(
+    `UPDATE properties SET compliance_score = $1 WHERE id = $2`,
+    [newScore, propertyId]
+  );
+
+  return newScore;
+}
 ```
 
-So a property with:
-- 1 high severity open violation → score = 80
-- 2 medium open violations → score = 80
-- 1 high + 1 medium + 1 low → score = 65
-- All violations resolved → score = 100
+**Examples:**
+
+| Open Violations | Score |
+|---|---|
+| None | 100 |
+| 1 low | 95 |
+| 1 medium | 90 |
+| 1 high | 80 |
+| 1 high + 1 medium + 1 low | 65 |
+| 5 high | 0 (floor) |
 
 ---
 
-## 11. Assumptions & Open Questions
+## 12. Open Questions
 
-### Assumptions I Made (confirm or correct these)
+One question remaining:
 
-| Assumption | What I did | Want to change? |
-|---|---|---|
-| "Tenant names" = the property owner | Used `owner_name` — one contact per property | Tell me if you need a separate renter field |
-| Violation status is just "open" or "resolved" | Removed the crossed-out "closed" from your sketch — open/resolved covers it | Fine to add "pending_appeal" later |
-| The trend graph is per-property | Shows violations over time for one property | Could also do community-wide on the main dashboard |
-| HOA rules are a hardcoded text string in the backend | Simplest approach for a hackathon | Could be a DB table or uploaded PDF in a future version |
-| Image storage via URL | Store image externally (Cloudinary free tier) and save the URL | Let me know if you want a different approach |
-
-### Questions I Have for You
-
-1. **Categories** — I expanded "Parking, Garbage" to 7 categories based on the PRD. Are you okay with this list, or do you want to change/simplify it?
-
-2. **The community-wide graph** — on your sketch you wrote "track how HOA is doing for all properties." Should the main dashboard (Screen 1) also show a graph of total violations across the whole community over time? Easy to add.
-
-3. **Image storage** — do you have a Cloudinary account, or would you rather use Azure Blob Storage (since you have Azure credits)? Both work fine; just need to pick one so Person 4 can set it up.
-
-4. **HOA Rules** — do you have an actual HOA rulebook you want to use, or should we use fictional placeholder rules for the demo? The quality of the AI output depends entirely on how good the rules text is.
+**HOA Rules text** — the `HOA_RULES` constant in `claude.js` is currently placeholder text. The quality of the AI's violation descriptions and rule citations depends entirely on how detailed and accurate this text is. Do you have a real HOA rulebook, or should we write a realistic fictional one for the demo? Either way, this needs to be finalized before the demo so Claude can cite actual rule numbers.
 
 ---
 
-*Built for hackathon. Two tables, one AI call, one email. Keep it simple.*
+*Two tables. One AI call. One email. That's the whole product.*

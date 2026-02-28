@@ -187,7 +187,7 @@ These are valid ideas but would take longer to build reliably than a hackathon a
 
 **Backend API:** A lightweight REST API (Flask or Express) that handles: property CRUD, violation record storage, proxying the LLM call (so the API key is never exposed to the browser), and triggering email sends.
 
-**Database:** SQLite for hackathon simplicity. Two main tables: `properties` and `violations`.
+**Database:** Postgres for hackathon simplicity. Two main tables: `properties` and `violations`.
 
 **AI Component:** A single LLM call with vision capability (e.g., Claude claude-sonnet-4-6 or GPT-4o). The HOA rulebook is included as text in the system prompt. The photo is passed as a base64 image. The prompt asks the model to return structured JSON.
 
@@ -288,7 +288,7 @@ These are the metrics you would demo or measure at the hackathon:
 |---|---|---|
 | Frontend | React + Tailwind CSS | Fast to build, good component ecosystem |
 | Backend | Python + FastAPI | Easy to learn, great for API calls |
-| Database | SQLite | Zero setup, sufficient for demo scale |
+| Database | Postgres | Zero setup, sufficient for demo scale |
 | LLM | Claude claude-sonnet-4-6 (vision) | Strong image understanding, structured JSON output |
 | Email | Resend.com | Simple API, generous free tier, easy setup |
 | Photo Storage | Base64 in DB or Cloudinary | No extra infrastructure needed |
