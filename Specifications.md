@@ -1,5 +1,5 @@
 # HOA Admin Dashboard — Technical Specification
-**Version:** 2.0 | **Stack:** React + Express.js + PostgreSQL + Claude API + Azure Blob Storage + Resend
+**Version:** 3.0 | **Stack:** React + Express.js + PostgreSQL + Claude API + Azure Blob Storage + Resend
 
 ---
 
@@ -10,12 +10,13 @@
 4. [Folder & File Structure](#4-folder--file-structure)
 5. [Environment Variables](#5-environment-variables)
 6. [The Claude AI Prompt](#6-the-claude-ai-prompt)
-7. [Azure Blob Image Upload](#7-azure-blob-image-upload)
-8. [The Email Template](#8-the-email-template)
-9. [Screen-by-Screen Breakdown](#9-screen-by-screen-breakdown)
-10. [Data Flow: Full Violation Walkthrough](#10-data-flow-full-violation-walkthrough)
-11. [Compliance Score Formula](#11-compliance-score-formula)
-12. [Open Questions](#12-open-questions)
+7. [Azure Blob Storage](#7-azure-blob-storage)
+8. [HOA Rules PDF Upload](#8-hoa-rules-pdf-upload)
+9. [The Email Template](#9-the-email-template)
+10. [Screen-by-Screen Breakdown](#10-screen-by-screen-breakdown)
+11. [Data Flow: Full Violation Walkthrough](#11-data-flow-full-violation-walkthrough)
+12. [Compliance Score Formula](#12-compliance-score-formula)
+13. [Open Questions](#13-open-questions)
 
 ---
 
@@ -64,14 +65,21 @@ That's it. One line. You never need to put violations inside the properties row.
 
 ```sql
 CREATE TABLE properties (
-  id               SERIAL PRIMARY KEY,
-  address          VARCHAR(255) NOT NULL,
-  owner_name       VARCHAR(255) NOT NULL,
-  owner_email      VARCHAR(255) NOT NULL,
-  owner_phone      VARCHAR(50),
-  resident_since   INTEGER,              -- year they moved in, e.g. 2019
-  compliance_score INTEGER DEFAULT 100, -- 0–100, recalculated automatically
-  created_at       TIMESTAMP DEFAULT NOW()
+  id                   SERIAL PRIMARY KEY,
+  address              VARCHAR(255) NOT NULL,
+  owner_name           VARCHAR(255) NOT NULL,
+  owner_email          VARCHAR(255) NOT NULL,
+  owner_phone          VARCHAR(50),
+  resident_since       INTEGER,              -- year they moved in, e.g. 2019
+  compliance_score     INTEGER DEFAULT 100, -- 0–100, recalculated automatically
+
+  -- HOA Rules PDF (per-property tenant agreement)
+  rules_pdf_url        TEXT,                -- public Azure Blob URL to the PDF file
+  rules_text           TEXT,                -- full extracted text, parsed once at upload
+  rules_pdf_hash       TEXT,                -- MD5 hash of the file, used to detect changes
+  rules_pdf_updated_at TIMESTAMP,           -- when the PDF was last re-parsed
+
+  created_at           TIMESTAMP DEFAULT NOW()
 );
 ```
 
@@ -150,6 +158,8 @@ All routes prefixed with `/api`.
 | `GET` | `/api/properties` | All properties + open violation count, sorted by score | — | `Property[]` |
 | `GET` | `/api/properties/:id` | One property + its full violations list | — | `Property & { violations: Violation[] }` |
 | `POST` | `/api/properties` | Create a new property | `{ address, owner_name, owner_email, owner_phone, resident_since }` | New `Property` |
+| `DELETE` | `/api/properties/:id` | Delete property + cascade violations, clean up blobs | — | `{ success: true }` |
+| `POST` | `/api/properties/:id/rules-pdf` | Upload or replace HOA rules PDF for a property | `multipart/form-data: { file }` | `{ success, changed, pdf_url? }` |
 
 ### Violations
 
@@ -192,11 +202,12 @@ hint:        "trash bins visible from street"  (optional)
 }
 ```
 
-The backend does three things in this one call:
+The backend does four things in this one call:
 1. Receives the image file via multer
 2. Uploads it to Azure Blob Storage → gets the public URL
-3. Passes the image as base64 to Claude API → gets the analysis JSON
-4. Returns both the `image_url` AND the analysis together
+3. Fetches `rules_text` from the property row in the DB (falls back to default rules if no PDF uploaded yet)
+4. Passes the image as base64 + the rules text to Claude API → gets the analysis JSON
+5. Returns both the `image_url` AND the analysis together
 
 The frontend stores the `image_url` from this response. When the admin submits the reviewed form, it sends that URL — no re-upload needed.
 
@@ -246,7 +257,7 @@ hoa-dashboard/
 │   │   │   ├── PropertyCard.jsx       ← Individual card in the properties list
 │   │   │   ├── ViolationRow.jsx       ← Row in the violation history table
 │   │   │   ├── ComplianceScore.jsx    ← Colored score badge (green/yellow/red)
-│   │   │   └── ViolationsTimeline.jsx ← The scatter chart (see Section 9)
+│   │   │   └── ViolationsTimeline.jsx ← The scatter chart (see Section 10)
 │   │   ├── api.js                     ← All fetch() calls live here — see below
 │   │   └── App.jsx
 │   ├── .env
@@ -255,12 +266,13 @@ hoa-dashboard/
 ├── backend/
 │   ├── src/
 │   │   ├── routes/
-│   │   │   ├── properties.js          ← GET /api/properties, GET /api/properties/:id, POST
+│   │   │   ├── properties.js          ← GET, POST, DELETE /api/properties + rules-pdf upload
 │   │   │   ├── violations.js          ← POST /analyze, POST /, PATCH /:id/resolve
 │   │   │   └── dashboard.js           ← GET /api/dashboard/violations-timeline
 │   │   ├── services/
-│   │   │   ├── claude.js              ← Claude API call (image → JSON analysis)
-│   │   │   ├── azure.js               ← Azure Blob upload (file buffer → public URL)
+│   │   │   ├── claude.js              ← Claude API call — accepts hoaRulesText as parameter
+│   │   │   ├── azure.js               ← uploadToBlob + deleteBlob helpers
+│   │   │   ├── pdf.js                 ← extractPdfText + hashFile helpers
 │   │   │   └── email.js               ← Resend email (property + violation → sends notice)
 │   │   ├── db/
 │   │   │   ├── index.js               ← PostgreSQL connection pool
@@ -317,6 +329,19 @@ export const createProperty = (data) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
   }).then(r => r.json());
+
+export const deleteProperty = (id) =>
+  fetch(`${BASE}/api/properties/${id}`, { method: 'DELETE' }).then(r => r.json());
+
+// Upload (or replace) the HOA rules PDF for a property
+export const uploadRulesPdf = (propertyId, file) => {
+  const form = new FormData();
+  form.append('file', file);
+  return fetch(`${BASE}/api/properties/${propertyId}/rules-pdf`, {
+    method: 'POST',
+    body: form
+  }).then(r => r.json());
+};
 ```
 
 > **Why FormData for the analyze call?** Because you're uploading an actual file (binary image data), not plain text. JSON can't carry binary files. `FormData` is the standard way browsers send file uploads. You do NOT set a `Content-Type` header — the browser sets it automatically with the correct `multipart/form-data` boundary string.
@@ -333,9 +358,9 @@ DATABASE_URL=postgresql://adminuser:password@your-server.postgres.database.azure
 # Claude API
 ANTHROPIC_API_KEY=sk-ant-...
 
-# Azure Blob Storage
+# Azure Blob Storage (connection string covers both containers)
 AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...
-AZURE_BLOB_CONTAINER_NAME=violations
+# Container names are hardcoded in azure.js: "violations" and "documents"
 
 # Resend Email
 RESEND_API_KEY=re_...
@@ -353,33 +378,36 @@ VITE_API_URL=http://localhost:3001   # change to Azure App Service URL after dep
 
 ### Backend `package.json` dependencies to install
 ```bash
-npm install express pg dotenv @anthropic-ai/sdk resend multer @azure/storage-blob cors
+npm install express pg dotenv @anthropic-ai/sdk resend multer @azure/storage-blob cors pdf-parse uuid
 ```
 
 - `multer` — handles multipart file uploads in Express
 - `@azure/storage-blob` — Azure's official Node.js SDK
 - `cors` — allows the Lovable frontend (different port/domain) to call the backend
+- `pdf-parse` — extracts plain text from PDF files (no OCR — standard text PDFs only)
+- `uuid` — generates unique filenames for blobs so nothing ever gets overwritten
 
 ---
 
 ## 6. The Claude AI Prompt
 
-Lives in `backend/src/services/claude.js`. This receives the raw image buffer, converts it to base64, and calls Claude.
+Lives in `backend/src/services/claude.js`. Receives the image buffer and the property's extracted rules text, and returns a structured JSON analysis.
+
+The key change from a hardcoded rules constant: `hoaRulesText` is now a **parameter** passed in at call time. The calling route fetches `rules_text` from the property's DB row and passes it here. If a property has no PDF uploaded yet, the route passes a default fallback string.
 
 ```javascript
 const Anthropic = require('@anthropic-ai/sdk');
 const client = new Anthropic();  // automatically reads ANTHROPIC_API_KEY from env
 
-// Replace this with your actual HOA rules document
-const HOA_RULES = `
-MAPLE GROVE HOA — COMMUNITY RULES
+// Fallback used only if a property has no PDF uploaded yet
+const DEFAULT_HOA_RULES = `
+GENERAL HOA RULES (FALLBACK)
 
 Section 3.1 — Lawn & Landscaping
 Grass must not exceed 6 inches. Dead plants and weeds must be cleared within 14 days of notice.
 
 Section 4.2 — Refuse & Recycling
 Trash containers must be stored out of street view at all times except on collection day.
-Bins must be returned by 8pm on collection day.
 
 Section 5.1 — Vehicles & Parking
 No RVs, boats, trailers, or commercial vehicles may be parked in driveways for more than 24 hours.
@@ -394,8 +422,10 @@ No shed, pergola, fence, or permanent structure may be added without prior HOA b
 
 const VALID_CATEGORIES = ['parking', 'garbage', 'lawn', 'exterior', 'structure', 'other'];
 
-async function analyzeViolation(imageBuffer, mimeType = 'image/jpeg', hint = '') {
+// hoaRulesText comes from the property's rules_text DB column (extracted from their PDF)
+async function analyzeViolation(imageBuffer, mimeType = 'image/jpeg', hoaRulesText, hint = '') {
   const base64Image = imageBuffer.toString('base64');
+  const rulesContext = hoaRulesText || DEFAULT_HOA_RULES;
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
@@ -411,7 +441,7 @@ Required fields:
   "category": one of [${VALID_CATEGORIES.join(', ')}] or null,
   "severity": "low", "medium", or "high" — or null if no violation,
   "description": "2-3 sentence plain English description of what you see",
-  "rule_cited": "Section X.X — exact rule text" or null,
+  "rule_cited": "Section X.X — exact rule text from the rulebook" or null,
   "remediation": "Specific steps the homeowner must take" or null,
   "deadline_days": 7 for minor, 14 for standard, 30 for major — or null
 }
@@ -422,7 +452,7 @@ Severity guide:
 - high: structural, safety, or major rule violation (e.g. unapproved structure)
 
 HOA RULEBOOK:
-${HOA_RULES}`,
+${rulesContext}`,
     messages: [{
       role: 'user',
       content: [
@@ -444,69 +474,203 @@ ${HOA_RULES}`,
   return JSON.parse(text);
 }
 
-module.exports = { analyzeViolation };
+module.exports = { analyzeViolation, DEFAULT_HOA_RULES };
 ```
 
 ---
 
-## 7. Azure Blob Image Upload
+## 7. Azure Blob Storage
 
-Lives in `backend/src/services/azure.js`.
+Lives in `backend/src/services/azure.js`. Handles all blob operations — uploading images, uploading PDFs, and deleting old blobs when files are replaced or properties are deleted.
+
+### Two containers
+
+```
+violations/    ← violation photos (one per violation, never deleted unless property deleted)
+documents/     ← HOA rules PDFs (one per property, replaced when a new PDF is uploaded)
+```
+
+Both containers need **"Blob" level public access** so images can be linked in emails and PDFs can be fetched back by the backend.
+
+### `azure.js` — complete service file
 
 ```javascript
 const { BlobServiceClient } = require('@azure/storage-blob');
-const { v4: uuidv4 } = require('uuid');  // npm install uuid
+const { v4: uuidv4 } = require('uuid');
 
 const blobServiceClient = BlobServiceClient.fromConnectionString(
   process.env.AZURE_STORAGE_CONNECTION_STRING
 );
 
-async function uploadViolationImage(fileBuffer, originalFilename) {
-  const containerClient = blobServiceClient.getContainerClient(
-    process.env.AZURE_BLOB_CONTAINER_NAME  // "violations"
-  );
+// Upload any file buffer to a given container, returns the public URL
+async function uploadToBlob(fileBuffer, originalFilename, containerName) {
+  const containerClient = blobServiceClient.getContainerClient(containerName);
+  const extension  = originalFilename.split('.').pop();
+  const blobName   = `${uuidv4()}.${extension}`;   // unique name — no collisions
+  const blobClient = containerClient.getBlockBlobClient(blobName);
 
-  // Generate a unique filename so nothing ever gets overwritten
-  const extension = originalFilename.split('.').pop();           // e.g. "jpg"
-  const blobName = `${uuidv4()}.${extension}`;                   // e.g. "f3a9b2c1-....jpg"
-
-  const blockBlobClient = containerClient.getBlockBlobClient(blobName);
-
-  await blockBlobClient.upload(fileBuffer, fileBuffer.length, {
-    blobHTTPHeaders: { blobContentType: `image/${extension}` }
+  await blobClient.upload(fileBuffer, fileBuffer.length, {
+    blobHTTPHeaders: { blobContentType: getMimeType(extension) }
   });
 
-  // Return the public URL — make sure "violations" container has public blob access
-  return blockBlobClient.url;
+  return blobClient.url;  // public URL saved to DB
 }
 
-module.exports = { uploadViolationImage };
+// Delete a blob by its full URL — safe to call even if blob no longer exists
+async function deleteBlob(blobUrl, containerName) {
+  const blobName   = blobUrl.split('/').pop();   // extract filename from end of URL
+  const blobClient = blobServiceClient
+    .getContainerClient(containerName)
+    .getBlockBlobClient(blobName);
+
+  await blobClient.deleteIfExists();
+  // deleteIfExists never throws — safe even if file was already removed
+}
+
+// Fetch a blob back as a Buffer (used when re-reading a PDF isn't needed — just a safety helper)
+async function fetchBlobAsBuffer(blobUrl, containerName) {
+  const blobName       = blobUrl.split('/').pop();
+  const blobClient     = blobServiceClient
+    .getContainerClient(containerName)
+    .getBlockBlobClient(blobName);
+  const downloadResult = await blobClient.download();
+  const chunks         = [];
+  for await (const chunk of downloadResult.readableStreamBody) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+function getMimeType(extension) {
+  const map = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', pdf: 'application/pdf' };
+  return map[extension.toLowerCase()] || 'application/octet-stream';
+}
+
+module.exports = { uploadToBlob, deleteBlob, fetchBlobAsBuffer };
 ```
 
-### How the analyze route uses both services
+### Azure Setup Steps (for Person 4)
+
+1. In the Azure Portal, create a **Storage Account** under your student subscription
+2. Inside it, create two **Blob Containers**: `violations` and `documents`
+3. Set **both containers'** Access Level to "Blob (anonymous read access for blobs only)"
+4. Copy the **Connection String** from Storage Account → Access Keys
+5. Paste it into the backend `.env` as `AZURE_STORAGE_CONNECTION_STRING`
+
+---
+
+## 8. HOA Rules PDF Upload
+
+### The PDF helper service — `backend/src/services/pdf.js`
 
 ```javascript
-// backend/src/routes/violations.js (the /analyze route)
-const multer = require('multer');
-const { analyzeViolation } = require('../services/claude');
-const { uploadViolationImage } = require('../services/azure');
+const pdfParse = require('pdf-parse');
+const crypto   = require('crypto');   // built into Node — no install needed
 
-const upload = multer({ storage: multer.memoryStorage() }); // keep file in memory, not disk
+// Extract all text from a PDF buffer
+async function extractPdfText(buffer) {
+  const result = await pdfParse(buffer);
+  return result.text;  // plain string of every word on every page
+}
+
+// MD5 hash of a file buffer — used to detect if the same file is re-uploaded
+function hashFile(buffer) {
+  return crypto.createHash('md5').update(buffer).digest('hex');
+}
+
+module.exports = { extractPdfText, hashFile };
+```
+
+> `pdf-parse` works on standard text-based PDFs (which HOA agreements always are). It does not do OCR. If someone uploads a scanned image PDF, the extracted text will be empty — acceptable for a hackathon since you control the test data.
+
+---
+
+### The PDF upload route — inside `backend/src/routes/properties.js`
+
+```javascript
+const { uploadToBlob, deleteBlob }   = require('../services/azure');
+const { extractPdfText, hashFile }   = require('../services/pdf');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
+
+router.post('/:id/rules-pdf', upload.single('file'), async (req, res) => {
+  const propertyId  = req.params.id;
+  const newBuffer   = req.file.buffer;
+
+  // Step 1 — hash the incoming file to detect duplicates
+  const newHash = hashFile(newBuffer);
+
+  // Step 2 — check what's currently stored for this property
+  const { rows } = await db.query(
+    `SELECT rules_pdf_url, rules_pdf_hash FROM properties WHERE id = $1`,
+    [propertyId]
+  );
+  const current = rows[0];
+
+  // Step 3 — same file re-uploaded? Do nothing.
+  if (current.rules_pdf_hash && current.rules_pdf_hash === newHash) {
+    return res.json({
+      success: true,
+      changed: false,
+      message: 'PDF is identical to the current version — no update needed.'
+    });
+  }
+
+  // Step 4 — different file: delete the old blob from Azure (if one exists)
+  if (current.rules_pdf_url) {
+    await deleteBlob(current.rules_pdf_url, 'documents');
+  }
+
+  // Step 5 — upload the new PDF to Azure Blob
+  const newPdfUrl = await uploadToBlob(newBuffer, req.file.originalname, 'documents');
+
+  // Step 6 — extract text from the new PDF (done once here, never again)
+  const newRulesText = await extractPdfText(newBuffer);
+
+  // Step 7 — persist everything to the DB
+  await db.query(
+    `UPDATE properties
+     SET rules_pdf_url        = $1,
+         rules_text           = $2,
+         rules_pdf_hash       = $3,
+         rules_pdf_updated_at = NOW()
+     WHERE id = $4`,
+    [newPdfUrl, newRulesText, newHash, propertyId]
+  );
+
+  res.json({ success: true, changed: true, pdf_url: newPdfUrl });
+});
+```
+
+---
+
+### How the analyze route uses the extracted text
+
+At violation-analysis time, the rules text is already sitting in the DB — no PDF fetching or parsing at all:
+
+```javascript
+// Inside POST /api/violations/analyze
+const { analyzeViolation, DEFAULT_HOA_RULES } = require('../services/claude');
+const { uploadToBlob }                        = require('../services/azure');
 
 router.post('/analyze', upload.single('file'), async (req, res) => {
   try {
     const { property_id, hint } = req.body;
-    const fileBuffer = req.file.buffer;
-    const mimeType = req.file.mimetype;       // e.g. "image/jpeg"
-    const originalName = req.file.originalname;
+    const fileBuffer  = req.file.buffer;
+    const mimeType    = req.file.mimetype;
 
-    // Step 1: Upload to Azure Blob, get back the public URL
-    const image_url = await uploadViolationImage(fileBuffer, originalName);
+    // Step 1 — upload violation photo to Azure Blob
+    const image_url = await uploadToBlob(fileBuffer, req.file.originalname, 'violations');
 
-    // Step 2: Send to Claude for analysis
-    const analysis = await analyzeViolation(fileBuffer, mimeType, hint || '');
+    // Step 2 — get this property's rules text (already extracted, just read from DB)
+    const propResult  = await db.query(
+      `SELECT rules_text FROM properties WHERE id = $1`, [property_id]
+    );
+    const hoaRulesText = propResult.rows[0]?.rules_text || DEFAULT_HOA_RULES;
 
-    // Return both together — frontend stores image_url for the final submit step
+    // Step 3 — call Claude with image + rules text
+    const analysis = await analyzeViolation(fileBuffer, mimeType, hoaRulesText, hint || '');
+
     res.json({ image_url, ...analysis });
 
   } catch (err) {
@@ -516,17 +680,45 @@ router.post('/analyze', upload.single('file'), async (req, res) => {
 });
 ```
 
-### Azure Setup Steps (for Person 4)
+---
 
-1. In the Azure Portal, create a **Storage Account** under your student subscription
-2. Inside it, create a **Blob Container** named `violations`
-3. Set the container's **Access Level** to "Blob (anonymous read access for blobs only)" — this makes images publicly accessible via URL so they can appear in emails
-4. Copy the **Connection String** from the Storage Account → Access Keys section
-5. Paste it into the backend `.env` as `AZURE_STORAGE_CONNECTION_STRING`
+### Property delete route — clean up blobs before DB row is removed
+
+`ON DELETE CASCADE` handles DB rows automatically, but Azure blobs have to be deleted manually:
+
+```javascript
+router.delete('/:id', async (req, res) => {
+  const { rows } = await db.query(
+    `SELECT rules_pdf_url FROM properties WHERE id = $1`, [req.params.id]
+  );
+
+  // Delete the HOA rules PDF from Azure if one exists
+  if (rows[0]?.rules_pdf_url) {
+    await deleteBlob(rows[0].rules_pdf_url, 'documents');
+  }
+
+  // Delete the DB row — violations are auto-deleted by ON DELETE CASCADE
+  // Note: violation image blobs are NOT cleaned up here (acceptable for hackathon)
+  await db.query(`DELETE FROM properties WHERE id = $1`, [req.params.id]);
+
+  res.json({ success: true });
+});
+```
 
 ---
 
-## 8. The Email Template
+### PDF change detection — all scenarios covered
+
+| Scenario | What happens |
+|---|---|
+| First PDF upload for a property | Hash stored, text extracted and saved, PDF blob uploaded |
+| Same PDF re-uploaded accidentally | Hash matches → returns early, nothing changes, no Azure write |
+| Updated PDF uploaded | Old blob deleted, new blob uploaded, text re-parsed, hash + timestamp updated |
+| Property deleted | PDF blob deleted from Azure, DB row deleted, violations cascade |
+
+---
+
+## 9. The Email Template
 
 Lives in `backend/src/services/email.js`.
 
@@ -627,7 +819,7 @@ module.exports = { sendViolationNotice };
 
 ---
 
-## 9. Screen-by-Screen Breakdown
+## 10. Screen-by-Screen Breakdown
 
 ### Screen 1: Properties Dashboard (`/`)
 
@@ -735,7 +927,7 @@ Spinner + "Analyzing photo with AI..." message. Claude typically takes 3–8 sec
 
 ---
 
-## 10. Data Flow: Full Violation Walkthrough
+## 11. Data Flow: Full Violation Walkthrough
 
 ```
 Step 1 — Admin opens Screen 3
@@ -753,8 +945,10 @@ Step 3 — Frontend calls POST /api/violations/analyze
 
 Step 4 — Backend /analyze route runs
   multer extracts file → buffer in memory
-  Calls uploadViolationImage(buffer, filename) → Azure Blob → returns public URL
-  Calls analyzeViolation(buffer, mimeType, hint) → Claude API → returns JSON
+  Calls uploadToBlob(buffer, filename, 'violations') → Azure Blob → returns public URL
+  Reads rules_text from properties table for this property_id (already extracted at PDF upload time)
+  Falls back to DEFAULT_HOA_RULES if property has no PDF yet
+  Calls analyzeViolation(buffer, mimeType, hoaRulesText, hint) → Claude API → returns JSON
   Returns: { image_url, category, severity, description, rule_cited, remediation, deadline_days }
 
 Step 5 — Frontend populates form (State B)
@@ -781,7 +975,7 @@ Step 8 — Frontend navigates to Property Detail
 
 ---
 
-## 11. Compliance Score Formula
+## 12. Compliance Score Formula
 
 Recalculated after every new violation and after every `resolve`. Runs in the backend violations route — NOT in the database.
 
@@ -824,13 +1018,3 @@ async function recalculateScore(propertyId, db) {
 | 5 high | 0 (floor) |
 
 ---
-
-## 12. Open Questions
-
-One question remaining:
-
-**HOA Rules text** — the `HOA_RULES` constant in `claude.js` is currently placeholder text. The quality of the AI's violation descriptions and rule citations depends entirely on how detailed and accurate this text is. Do you have a real HOA rulebook, or should we write a realistic fictional one for the demo? Either way, this needs to be finalized before the demo so Claude can cite actual rule numbers.
-
----
-
-*Two tables. One AI call. One email. That's the whole product.*
