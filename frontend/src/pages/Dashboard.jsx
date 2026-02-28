@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { getProperties, getViolationsTimeline, createProperty, deleteProperty } from '../api';
 import PropertyCard       from '../components/PropertyCard';
 import ViolationsTimeline from '../components/ViolationsTimeline';
+import AvgScoreRing       from '../components/AvgScoreRing';
 
 const EMPTY_FORM = {
   address: '', owner_name: '', owner_email: '', owner_phone: '', resident_since: ''
@@ -53,18 +54,20 @@ export default function Dashboard() {
     <div className="max-w-5xl mx-auto p-8 space-y-6">
 
       {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-blue-900">HOA Compliance Dashboard</h1>
-          <p className="text-gray-500 mt-1">
-            {properties.length} properties ·{' '}
-            {openCount} with open violations ·{' '}
-            avg score {avgScore}
-          </p>
+      <div className="flex items-center justify-between gap-6">
+        <div className="flex items-center gap-6 flex-1">
+          <AvgScoreRing score={avgScore} />
+          <div>
+            <h1 className="text-3xl font-bold text-blue-900">HOA Compliance Dashboard</h1>
+            <p className="text-gray-500 mt-1">
+              {properties.length} properties ·{' '}
+              {openCount} with open violations
+            </p>
+          </div>
         </div>
         <button
           onClick={() => setShowAdd(true)}
-          className="bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-800 transition"
+          className="bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-800 transition flex-shrink-0"
         >
           + Add Property
         </button>

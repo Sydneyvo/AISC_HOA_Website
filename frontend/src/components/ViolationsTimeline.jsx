@@ -1,6 +1,14 @@
+import { useState, useMemo } from 'react';
 import { ScatterChart, Scatter, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
 const COLORS = { high: '#dc2626', medium: '#d97706', low: '#16a34a' };
+
+const RANGES = [
+  { label: 'Week',     key: '1w', ms: 7  * 24 * 60 * 60 * 1000 },
+  { label: 'Month',   key: '1m', ms: 30 * 24 * 60 * 60 * 1000 },
+  { label: '6 Months', key: '6m', ms: 182 * 24 * 60 * 60 * 1000 },
+  { label: 'All',     key: 'all', ms: null },
+];
 
 const CustomDot = (props) => {
   const { cx, cy, payload } = props;
@@ -35,43 +43,76 @@ const CustomTooltip = ({ active, payload }) => {
 };
 
 export default function ViolationsTimeline({ violations }) {
-  const data = violations.map(v => ({
-    ...v,
-    x: new Date(v.created_at).getTime(),
-    y: 1 + (Math.random() * 0.4 - 0.2),  // slight jitter so overlapping dots are visible
-  }));
+  const [range, setRange] = useState('6m');
+
+  const data = useMemo(() => {
+    const selected = RANGES.find(r => r.key === range);
+    const cutoff = selected.ms ? Date.now() - selected.ms : 0;
+    return violations
+      .filter(v => new Date(v.created_at).getTime() >= cutoff)
+      .map(v => ({
+        ...v,
+        x: new Date(v.created_at).getTime(),
+        y: 1 + (Math.random() * 0.4 - 0.2),
+      }));
+  }, [violations, range]);
 
   const formatDate = (ts) =>
     new Date(ts).toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
 
   return (
     <div className="bg-white rounded-xl border p-6">
-      <h2 className="text-lg font-semibold text-gray-800 mb-1">Community Violations Timeline</h2>
-      <p className="text-sm text-gray-400 mb-4">Every violation logged across all properties</p>
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-lg font-semibold text-gray-800">Community Violations Timeline</h2>
+        <div className="flex gap-1">
+          {RANGES.map(r => (
+            <button
+              key={r.key}
+              onClick={() => setRange(r.key)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                range === r.key
+                  ? 'bg-blue-700 text-white'
+                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="text-sm text-gray-400 mb-4">
+        {data.length} violation{data.length !== 1 ? 's' : ''} in selected period
+      </p>
 
-      <ResponsiveContainer width="100%" height={140}>
-        <ScatterChart margin={{ top: 10, right: 20, bottom: 10, left: 10 }}>
-          <XAxis
-            dataKey="x"
-            type="number"
-            domain={['auto', 'auto']}
-            tickFormatter={formatDate}
-            scale="time"
-            tick={{ fontSize: 11, fill: '#9ca3af' }}
-            axisLine={false}
-            tickLine={false}
-          />
-          <YAxis dataKey="y" type="number" hide domain={[0.5, 1.5]} />
-          <Tooltip content={<CustomTooltip />} cursor={false} />
-          <Scatter data={data} shape={<CustomDot />} />
-        </ScatterChart>
-      </ResponsiveContainer>
+      {data.length === 0 ? (
+        <div className="h-[140px] flex items-center justify-center text-gray-400 text-sm">
+          No violations in this period
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height={140}>
+          <ScatterChart margin={{ top: 10, right: 20, bottom: 10, left: 10 }}>
+            <XAxis
+              dataKey="x"
+              type="number"
+              domain={['auto', 'auto']}
+              tickFormatter={formatDate}
+              scale="time"
+              tick={{ fontSize: 11, fill: '#9ca3af' }}
+              axisLine={false}
+              tickLine={false}
+            />
+            <YAxis dataKey="y" type="number" hide domain={[0.5, 1.5]} />
+            <Tooltip content={<CustomTooltip />} cursor={false} />
+            <Scatter data={data} shape={<CustomDot />} />
+          </ScatterChart>
+        </ResponsiveContainer>
+      )}
 
       <div className="flex gap-5 mt-2 text-xs text-gray-500">
         {[
-          { label: 'High', color: 'bg-red-500' },
-          { label: 'Medium', color: 'bg-yellow-500' },
-          { label: 'Low', color: 'bg-green-500' },
+          { label: 'High',     color: 'bg-red-500' },
+          { label: 'Medium',   color: 'bg-yellow-500' },
+          { label: 'Low',      color: 'bg-green-500' },
           { label: 'Resolved', color: 'bg-gray-400 opacity-40' },
         ].map(({ label, color }) => (
           <span key={label} className="flex items-center gap-1.5">

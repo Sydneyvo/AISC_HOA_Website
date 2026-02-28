@@ -1,8 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { getProperty, uploadRulesPdf } from '../api';
 import ComplianceScore from '../components/ComplianceScore';
 import ViolationRow    from '../components/ViolationRow';
+
+const CATEGORIES = ['parking', 'garbage', 'lawn', 'exterior', 'structure', 'other'];
+const SEV_ORDER  = { high: 0, medium: 1, low: 2 };
+
+const pill = (active) =>
+  `px-3 py-1 rounded-full text-xs font-medium transition ${
+    active ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+  }`;
 
 export default function PropertyDetail() {
   const { id }   = useParams();
@@ -10,12 +18,17 @@ export default function PropertyDetail() {
   const [property, setProperty] = useState(null);
   const [loading, setLoading]   = useState(true);
 
+  // Filter / sort state
+  const [statusFilter,   setStatusFilter]   = useState('all');
+  const [severityFilter, setSeverityFilter] = useState('all');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [sortBy,         setSortBy]         = useState('date_desc');
+
   useEffect(() => {
     getProperty(id).then(data => { setProperty(data); setLoading(false); });
   }, [id]);
 
   const handleResolved = (violationId) => {
-    // Optimistic UI update, then refetch for accurate compliance score
     setProperty(prev => ({
       ...prev,
       violations: prev.violations.map(v =>
@@ -35,14 +48,33 @@ export default function PropertyDetail() {
     } else {
       alert('Upload failed: ' + result.error);
     }
-    // Reset the input so the same file can be re-selected if needed
     e.target.value = '';
   };
+
+  const filteredViolations = useMemo(() => {
+    if (!property?.violations) return [];
+    let list = [...property.violations];
+
+    if (statusFilter   !== 'all') list = list.filter(v => v.status   === statusFilter);
+    if (severityFilter !== 'all') list = list.filter(v => v.severity === severityFilter);
+    if (categoryFilter !== 'all') list = list.filter(v => v.category === categoryFilter);
+
+    list.sort((a, b) => {
+      if (sortBy === 'date_desc')  return new Date(b.created_at) - new Date(a.created_at);
+      if (sortBy === 'date_asc')   return new Date(a.created_at) - new Date(b.created_at);
+      if (sortBy === 'sev_desc')   return SEV_ORDER[a.severity] - SEV_ORDER[b.severity];
+      if (sortBy === 'sev_asc')    return SEV_ORDER[b.severity] - SEV_ORDER[a.severity];
+      return 0;
+    });
+
+    return list;
+  }, [property?.violations, statusFilter, severityFilter, categoryFilter, sortBy]);
 
   if (loading) return <div className="p-8 text-gray-400">Loading...</div>;
   if (!property || property.error) return <div className="p-8 text-red-500">Property not found.</div>;
 
-  const openCount = property.violations?.filter(v => v.status === 'open').length ?? 0;
+  const openCount  = property.violations?.filter(v => v.status === 'open').length ?? 0;
+  const totalCount = property.violations?.length ?? 0;
 
   return (
     <div className="max-w-4xl mx-auto p-8 space-y-6">
@@ -104,15 +136,68 @@ export default function PropertyDetail() {
 
       {/* Violations Table */}
       <div className="bg-white rounded-xl border overflow-hidden">
-        <div className="px-6 py-4 border-b flex items-center justify-between">
-          <h2 className="font-semibold text-gray-800">Violation History</h2>
-          <span className="text-sm text-gray-400">
-            {property.violations?.length ?? 0} total
-          </span>
+
+        {/* Table header + filter bar */}
+        <div className="px-6 py-4 border-b space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="font-semibold text-gray-800">Violation History</h2>
+            <span className="text-sm text-gray-400">
+              {filteredViolations.length} of {totalCount} shown
+            </span>
+          </div>
+
+          {totalCount > 0 && (
+            <div className="flex flex-wrap items-center gap-3">
+
+              {/* Status pills */}
+              <div className="flex gap-1">
+                {['all', 'open', 'resolved'].map(s => (
+                  <button key={s} className={pill(statusFilter === s)} onClick={() => setStatusFilter(s)}>
+                    {s.charAt(0).toUpperCase() + s.slice(1)}
+                  </button>
+                ))}
+              </div>
+
+              {/* Severity pills */}
+              <div className="flex gap-1">
+                {['all', 'low', 'medium', 'high'].map(s => (
+                  <button key={s} className={pill(severityFilter === s)} onClick={() => setSeverityFilter(s)}>
+                    {s.charAt(0).toUpperCase() + s.slice(1)}
+                  </button>
+                ))}
+              </div>
+
+              {/* Category dropdown */}
+              <select
+                value={categoryFilter}
+                onChange={e => setCategoryFilter(e.target.value)}
+                className="border rounded-full px-3 py-1 text-xs text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-300 bg-gray-50"
+              >
+                <option value="all">All categories</option>
+                {CATEGORIES.map(c => (
+                  <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+                ))}
+              </select>
+
+              {/* Sort dropdown */}
+              <select
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value)}
+                className="border rounded-full px-3 py-1 text-xs text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-300 bg-gray-50 ml-auto"
+              >
+                <option value="date_desc">Newest first</option>
+                <option value="date_asc">Oldest first</option>
+                <option value="sev_desc">Severity: high → low</option>
+                <option value="sev_asc">Severity: low → high</option>
+              </select>
+            </div>
+          )}
         </div>
 
-        {!property.violations?.length ? (
+        {!totalCount ? (
           <p className="p-6 text-gray-400 text-sm">No violations recorded yet.</p>
+        ) : filteredViolations.length === 0 ? (
+          <p className="p-6 text-gray-400 text-sm">No violations match the current filters.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -127,7 +212,7 @@ export default function PropertyDetail() {
                 </tr>
               </thead>
               <tbody>
-                {property.violations.map(v => (
+                {filteredViolations.map(v => (
                   <ViolationRow key={v.id} violation={v} onResolved={handleResolved} />
                 ))}
               </tbody>
