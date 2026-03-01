@@ -39,7 +39,11 @@ router.get('/', async (req, res) => {
       where = `WHERE category = $1`;
     }
     const { rows } = await db.query(
-      `SELECT * FROM community_posts ${where} ORDER BY created_at DESC`,
+      `SELECT cp.*, z.name AS zone_name, z.color AS zone_color
+       FROM community_posts cp
+       LEFT JOIN zones z ON z.id = cp.zone_id
+       ${where}
+       ORDER BY cp.created_at DESC`,
       params
     );
     res.json(rows);
@@ -65,16 +69,19 @@ router.get('/unread-count', async (req, res) => {
   }
 });
 
-// POST /api/community  — multipart/form-data: title, body, category, image(optional)
+// POST /api/community  — multipart/form-data: title, body, category, zone_id(optional), image(optional)
 router.post('/', upload.single('image'), async (req, res) => {
   try {
     const { email, name } = await getCallerInfo(req);
     const role             = await getRole(email);
-    const { title, body, category } = req.body;
+    const { title, body, category, zone_id } = req.body;
 
     if (!title || !body || !category) {
       return res.status(400).json({ error: 'title, body, and category are required' });
     }
+
+    // Only admins can target a specific zone
+    const targetZoneId = (role === 'admin' && zone_id) ? parseInt(zone_id, 10) : null;
 
     let image_url = null;
     if (req.file) {
@@ -82,15 +89,19 @@ router.post('/', upload.single('image'), async (req, res) => {
     }
 
     const { rows } = await db.query(
-      `INSERT INTO community_posts (author_email, author_name, author_role, category, title, body, image_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [email, name, role, category, title, body, image_url]
+      `INSERT INTO community_posts (author_email, author_name, author_role, category, title, body, image_url, zone_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [email, name, role, category, title, body, image_url, targetZoneId]
     );
     const post = rows[0];
 
     // Fire email blast asynchronously — never blocks the response
     if (process.env.ANNOUNCE_EMAIL_NOTIFY === 'true') {
-      db.query('SELECT owner_email FROM properties').then(({ rows: props }) => {
+      const recipientQuery = targetZoneId
+        ? db.query('SELECT owner_email FROM properties WHERE zone_id = $1', [targetZoneId])
+        : db.query('SELECT owner_email FROM properties');
+
+      recipientQuery.then(({ rows: props }) => {
         const recipients = props.map(p => p.owner_email).filter(Boolean);
         if (recipients.length) {
           sendCommunityAnnouncement({ authorName: name, authorRole: role, category, title, recipients })
