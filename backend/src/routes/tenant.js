@@ -8,10 +8,11 @@ const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY 
 
 async function getEmailFromReq(req) {
   const user = await clerkClient.users.getUser(req.auth.userId);
-  return (
+  const email =
     user.emailAddresses.find(e => e.id === user.primaryEmailAddressId)?.emailAddress ||
-    user.emailAddresses[0]?.emailAddress
-  );
+    user.emailAddresses[0]?.emailAddress;
+  if (!email) throw new Error('No email address on Clerk account');
+  return email;
 }
 
 // GET /api/tenant/me
@@ -97,6 +98,7 @@ router.patch('/violations/:id/flag-fixed', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Violation not found or already actioned' });
     res.json(rows[0]);
   } catch (err) {
+    console.error('Tenant flag-fixed error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -115,14 +117,15 @@ router.patch('/bills/:id/pay', async (req, res) => {
 
     const { rows } = await db.query(
       `UPDATE monthly_bills SET status = 'paid', paid_at = NOW()
-       WHERE id = $1 AND property_id = $2
+       WHERE id = $1 AND property_id = $2 AND status != 'paid'
        RETURNING *`,
       [req.params.id, propertyId]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Bill not found' });
+    if (!rows.length) return res.status(404).json({ error: 'Bill not found or already paid' });
     await recalcScore(propertyId);
     res.json(rows[0]);
   } catch (err) {
+    console.error('Tenant pay bill error:', err);
     res.status(500).json({ error: err.message });
   }
 });
