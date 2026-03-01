@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
-import { setTokenGetter, getTenantMe } from './api';
+import { setTokenGetter, getTenantMe, getCommunityUnreadCount } from './api';
 import Dashboard       from './pages/Dashboard';
 import PropertyDetail  from './pages/PropertyDetail';
 import ViolationForm   from './pages/ViolationForm';
@@ -21,7 +21,14 @@ function AuthBridge({ onRoleLoaded }) {
 }
 
 export default function App() {
-  const [roleData, setRoleData] = useState(null); // null = still loading
+  const [roleData, setRoleData]           = useState(null); // null = still loading
+  const [communityUnread, setCommunityUnread] = useState(false);
+
+  useEffect(() => {
+    if (roleData?.role !== 'admin') return;
+    const since = localStorage.getItem('community_last_seen');
+    getCommunityUnreadCount(since).then(({ count }) => setCommunityUnread(count > 0)).catch(() => {});
+  }, [roleData]);
 
   return (
     <>
@@ -39,7 +46,12 @@ export default function App() {
             <nav className="bg-blue-900 text-white px-8 py-4 flex items-center justify-between">
               <div className="flex items-center gap-6">
                 <a href="/" className="font-bold text-lg hover:opacity-80">HOA Compliance</a>
-                <a href="/community" className="text-sm font-medium hover:opacity-80">Community</a>
+                <a href="/community" className="text-sm font-medium hover:opacity-80 relative">
+                  Community
+                  {communityUnread && (
+                    <span className="absolute -top-1 -right-2 w-2 h-2 bg-red-500 rounded-full" />
+                  )}
+                </a>
               </div>
               <UserButton />
             </nav>
@@ -48,7 +60,7 @@ export default function App() {
               <Route path="/properties/:id"                         element={<PropertyDetail />} />
               <Route path="/properties/:id/violations/new"          element={<ViolationForm />} />
               <Route path="/properties/:id/violations/:violId/edit" element={<ViolationEdit />} />
-              <Route path="/community"                              element={<CommunityPage />} />
+              <Route path="/community"                              element={<CommunityPage onViewed={() => setCommunityUnread(false)} />} />
               <Route path="/login"                                  element={<Navigate to="/" replace />} />
             </Routes>
           </div>

@@ -49,6 +49,22 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/community/unread-count?since=<ISO timestamp>
+router.get('/unread-count', async (req, res) => {
+  try {
+    const { since } = req.query;
+    const cutoff = since ? new Date(since) : new Date(0);
+    const { rows } = await db.query(
+      'SELECT COUNT(*)::int AS count FROM community_posts WHERE created_at > $1',
+      [cutoff]
+    );
+    res.json({ count: rows[0].count });
+  } catch (err) {
+    console.error('Community unread-count error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/community  — multipart/form-data: title, body, category, image(optional)
 router.post('/', upload.single('image'), async (req, res) => {
   try {

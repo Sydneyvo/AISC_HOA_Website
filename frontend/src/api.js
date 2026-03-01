@@ -155,3 +155,10 @@ export const deleteCommunityPost = async (id) =>
     method: 'DELETE',
     headers: await authHeaders(),
   }).then(json);
+
+export const getCommunityUnreadCount = async (since) => {
+  const params = since ? `?since=${encodeURIComponent(since)}` : '';
+  return fetch(`${BASE}/api/community/unread-count${params}`, {
+    headers: await authHeaders(),
+  }).then(json);
+};

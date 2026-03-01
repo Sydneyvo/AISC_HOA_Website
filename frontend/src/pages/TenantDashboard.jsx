@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { UserButton } from '@clerk/clerk-react';
-import { flagViolationFixed, tenantPayBill } from '../api';
+import { flagViolationFixed, tenantPayBill, getCommunityUnreadCount } from '../api';
 import CommunityBoard from '../components/CommunityBoard';
 
 const SEVERITY_STYLES = {
@@ -42,7 +42,13 @@ export default function TenantDashboard({ initialData }) {
   const [bills, setBills]           = useState(initialData.bills       || []);
   const [flagging, setFlagging]     = useState(null);
   const [paying, setPaying]         = useState(null);
-  const [activeTab, setActiveTab]   = useState('property');
+  const [activeTab, setActiveTab]       = useState('property');
+  const [communityUnread, setCommunityUnread] = useState(false);
+
+  useEffect(() => {
+    const since = localStorage.getItem('community_last_seen');
+    getCommunityUnreadCount(since).then(({ count }) => setCommunityUnread(count > 0)).catch(() => {});
+  }, []);
 
   const property = initialData.property;
   const score    = property.combined_score ?? property.compliance_score;
@@ -95,11 +101,14 @@ export default function TenantDashboard({ initialData }) {
           </button>
           <button
             onClick={() => setActiveTab('community')}
-            className={`px-5 py-2 text-sm font-semibold rounded-md transition ${
+            className={`px-5 py-2 text-sm font-semibold rounded-md transition relative ${
               activeTab === 'community' ? 'bg-white shadow text-blue-900' : 'text-gray-600 hover:text-gray-800'
             }`}
           >
             Community
+            {communityUnread && (
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full" />
+            )}
           </button>
         </div>
 
@@ -233,7 +242,11 @@ export default function TenantDashboard({ initialData }) {
 
           </div>
         ) : (
-          <CommunityBoard currentUserEmail={property.owner_email} isAdmin={false} />
+          <CommunityBoard
+            currentUserEmail={property.owner_email}
+            isAdmin={false}
+            onViewed={() => setCommunityUnread(false)}
+          />
         )}
 
       </div>

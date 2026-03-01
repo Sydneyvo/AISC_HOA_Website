@@ -31,7 +31,7 @@ function timeAgo(dateStr) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-export default function CommunityBoard({ currentUserEmail, isAdmin }) {
+export default function CommunityBoard({ currentUserEmail, isAdmin, onViewed }) {
   const [posts,       setPosts]      = useState([]);
   const [catFilter,   setCatFilter]  = useState('all');
   const [showForm,    setShowForm]   = useState(false);
@@ -47,7 +47,12 @@ export default function CommunityBoard({ currentUserEmail, isAdmin }) {
   useEffect(() => {
     setLoading(true);
     getCommunityPosts(catFilter)
-      .then(setPosts)
+      .then(posts => {
+        setPosts(posts);
+        // Mark community as seen — update localStorage and notify parent to clear dot
+        localStorage.setItem('community_last_seen', new Date().toISOString());
+        onViewed?.();
+      })
       .catch(err => alert('Failed to load posts: ' + err.message))
       .finally(() => setLoading(false));
   }, [catFilter]);
