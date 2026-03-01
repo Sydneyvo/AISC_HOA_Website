@@ -150,11 +150,12 @@ router.patch('/:id/resolve', async (req, res) => {
 router.patch('/:id/reopen', async (req, res) => {
   try {
     const { rows } = await db.query(
-      `UPDATE violations SET status = 'open' WHERE id = $1 RETURNING *`,
+      `UPDATE violations SET status = 'open' WHERE id = $1 AND status = 'pending_review' RETURNING *`,
       [req.params.id]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Violation not found' });
+    if (!rows.length) return res.status(404).json({ error: 'Violation not found or not pending review' });
     await recalcScore(rows[0].property_id);
+    await ensureCurrentBill(rows[0].property_id);
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
