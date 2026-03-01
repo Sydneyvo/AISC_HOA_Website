@@ -110,3 +110,27 @@ export const payBill = async (billId) =>
     method: 'PATCH',
     headers: await authHeaders(),
   }).then(json);
+
+// Tenant portal
+export const getTenantMe = async () =>
+  fetch(`${BASE}/api/tenant/me`, {
+    headers: await authHeaders(),
+  }).then(json);
+
+export const flagViolationFixed = async (id) =>
+  fetch(`${BASE}/api/tenant/violations/${id}/flag-fixed`, {
+    method: 'PATCH',
+    headers: await authHeaders(),
+  }).then(json);
+
+export const tenantPayBill = async (id) =>
+  fetch(`${BASE}/api/tenant/bills/${id}/pay`, {
+    method: 'PATCH',
+    headers: await authHeaders(),
+  }).then(json);
+
+export const reopenViolation = async (id) =>
+  fetch(`${BASE}/api/violations/${id}/reopen`, {
+    method: 'PATCH',
+    headers: await authHeaders(),
+  }).then(json);
