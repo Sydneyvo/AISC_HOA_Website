@@ -36,3 +36,19 @@ UPDATE properties SET combined_score = compliance_score WHERE combined_score IS 
 ALTER TABLE violations DROP CONSTRAINT IF EXISTS violations_status_check;
 ALTER TABLE violations ADD CONSTRAINT violations_status_check
   CHECK (status IN ('open', 'pending_review', 'resolved'));
+
+-- Migration: community safety module
+CREATE TABLE IF NOT EXISTS community_posts (
+  id           SERIAL PRIMARY KEY,
+  author_email VARCHAR(255) NOT NULL,
+  author_name  VARCHAR(255) NOT NULL,
+  author_role  VARCHAR(10)  NOT NULL CHECK (author_role IN ('admin', 'tenant')),
+  category     VARCHAR(50)  NOT NULL CHECK (category IN (
+                 'safety', 'lost_pet', 'wildlife',
+                 'infrastructure', 'hoa_notice', 'general'
+               )),
+  title        VARCHAR(255) NOT NULL,
+  body         TEXT         NOT NULL,
+  image_url    TEXT,
+  created_at   TIMESTAMPTZ  DEFAULT NOW()
+);
