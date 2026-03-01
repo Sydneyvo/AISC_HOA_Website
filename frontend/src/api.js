@@ -1,78 +1,112 @@
 const BASE = import.meta.env.VITE_API_URL;
 
+// Injected by App.jsx after Clerk initializes
+let _getToken = async () => null;
+export function setTokenGetter(fn) { _getToken = fn; }
+
+// Build auth headers, merging any extra headers passed in
+async function authHeaders(extra = {}) {
+  const token = await _getToken();
+  if (token) extra['Authorization'] = `Bearer ${token}`;
+  return extra;
+}
+
 const json = async (r) => {
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.json();
 };
 
 // Screen 1
-export const getProperties = () =>
-  fetch(`${BASE}/api/properties`).then(json);
+export const getProperties = async () =>
+  fetch(`${BASE}/api/properties`, {
+    headers: await authHeaders(),
+  }).then(json);
 
-export const getViolationsTimeline = () =>
-  fetch(`${BASE}/api/dashboard/violations-timeline`).then(json);
+export const getViolationsTimeline = async () =>
+  fetch(`${BASE}/api/dashboard/violations-timeline`, {
+    headers: await authHeaders(),
+  }).then(json);
 
 // Screen 2
-export const getProperty = (id) =>
-  fetch(`${BASE}/api/properties/${id}`).then(json);
+export const getProperty = async (id) =>
+  fetch(`${BASE}/api/properties/${id}`, {
+    headers: await authHeaders(),
+  }).then(json);
 
-export const resolveViolation = (id) =>
-  fetch(`${BASE}/api/violations/${id}/resolve`, { method: 'PATCH' }).then(json);
+export const resolveViolation = async (id) =>
+  fetch(`${BASE}/api/violations/${id}/resolve`, {
+    method: 'PATCH',
+    headers: await authHeaders(),
+  }).then(json);
 
-export const getViolation = (id) =>
-  fetch(`${BASE}/api/violations/${id}`).then(json);
+export const getViolation = async (id) =>
+  fetch(`${BASE}/api/violations/${id}`, {
+    headers: await authHeaders(),
+  }).then(json);
 
-export const updateViolation = (id, data) =>
+export const updateViolation = async (id, data) =>
   fetch(`${BASE}/api/violations/${id}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(data),
   }).then(json);
 
 // Screen 3 — uses FormData (NOT JSON) because we're uploading a file
-export const analyzeViolation = (file, propertyId, hint = '') => {
+export const analyzeViolation = async (file, propertyId, hint = '') => {
   const form = new FormData();
   form.append('file', file);
   form.append('property_id', propertyId);
   form.append('hint', hint);
   return fetch(`${BASE}/api/violations/analyze`, {
     method: 'POST',
-    body: form   // no Content-Type header — browser sets it automatically with boundary
+    headers: await authHeaders(), // no Content-Type — browser sets it with boundary
+    body: form,
   }).then(json);
 };
 
-export const submitViolation = (data) =>
+export const submitViolation = async (data) =>
   fetch(`${BASE}/api/violations`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(data),
   }).then(json);
 
-export const createProperty = (data) =>
+export const createProperty = async (data) =>
   fetch(`${BASE}/api/properties`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(data),
   }).then(json);
 
-export const deleteProperty = (id) =>
-  fetch(`${BASE}/api/properties/${id}`, { method: 'DELETE' }).then(json);
+export const deleteProperty = async (id) =>
+  fetch(`${BASE}/api/properties/${id}`, {
+    method: 'DELETE',
+    headers: await authHeaders(),
+  }).then(json);
 
-export const uploadRulesPdf = (propertyId, file) => {
+export const uploadRulesPdf = async (propertyId, file) => {
   const form = new FormData();
   form.append('file', file);
   return fetch(`${BASE}/api/properties/${propertyId}/rules-pdf`, {
     method: 'POST',
-    body: form
+    headers: await authHeaders(), // no Content-Type — browser sets it with boundary
+    body: form,
   }).then(json);
 };
 
 // Finance
-export const getFinance = () =>
-  fetch(`${BASE}/api/finance`).then(json);
+export const getFinance = async () =>
+  fetch(`${BASE}/api/finance`, {
+    headers: await authHeaders(),
+  }).then(json);
 
-export const getPropertyBills = (propertyId) =>
-  fetch(`${BASE}/api/finance/property/${propertyId}`).then(json);
+export const getPropertyBills = async (propertyId) =>
+  fetch(`${BASE}/api/finance/property/${propertyId}`, {
+    headers: await authHeaders(),
+  }).then(json);
 
-export const payBill = (billId) =>
-  fetch(`${BASE}/api/finance/${billId}/pay`, { method: 'PATCH' }).then(json);
+export const payBill = async (billId) =>
+  fetch(`${BASE}/api/finance/${billId}/pay`, {
+    method: 'PATCH',
+    headers: await authHeaders(),
+  }).then(json);
