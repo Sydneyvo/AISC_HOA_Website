@@ -18,6 +18,7 @@ app.use('/api/properties', requireAuth(), require('./routes/properties'));
 app.use('/api/violations', requireAuth(), require('./routes/violations'));
 app.use('/api/dashboard',  requireAuth(), require('./routes/dashboard'));
 app.use('/api/finance',    requireAuth(), require('./routes/bills'));
+app.use('/api/tenant',     requireAuth(), require('./routes/tenant'));
 
 // Health check — intentionally unprotected
 app.get('/health', (req, res) => res.json({ ok: true }));
