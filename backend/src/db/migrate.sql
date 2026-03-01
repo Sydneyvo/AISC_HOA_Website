@@ -52,3 +52,20 @@ CREATE TABLE IF NOT EXISTS community_posts (
   image_url    TEXT,
   created_at   TIMESTAMPTZ  DEFAULT NOW()
 );
+
+-- Migration: Map & Zones
+CREATE TABLE IF NOT EXISTS zones (
+  id         SERIAL PRIMARY KEY,
+  name       VARCHAR(100) NOT NULL,
+  color      VARCHAR(7)   NOT NULL DEFAULT '#3B82F6',
+  geojson    JSONB        NOT NULL,
+  created_at TIMESTAMP    DEFAULT NOW()
+);
+
+ALTER TABLE properties
+  ADD COLUMN IF NOT EXISTS latitude  DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS zone_id   INTEGER REFERENCES zones(id) ON DELETE SET NULL;
+
+ALTER TABLE community_posts
+  ADD COLUMN IF NOT EXISTS zone_id INTEGER REFERENCES zones(id) ON DELETE SET NULL;
