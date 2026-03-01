@@ -1,25 +1,17 @@
 import { useState, useEffect } from 'react';
-import { getCommunityPosts, createCommunityPost, deleteCommunityPost } from '../api';
+import { getCommunityPosts, createCommunityPost, deleteCommunityPost, getZones } from '../api';
 
 const CATEGORIES = ['all', 'safety', 'lost_pet', 'wildlife', 'infrastructure', 'hoa_notice', 'general'];
 
 const CATEGORY_LABELS = {
-  all:            'All',
-  safety:         'Safety',
-  lost_pet:       'Lost Pet',
-  wildlife:       'Wildlife',
-  infrastructure: 'Infrastructure',
-  hoa_notice:     'HOA Notice',
-  general:        'General',
+  all: 'All', safety: 'Safety', lost_pet: 'Lost Pet', wildlife: 'Wildlife',
+  infrastructure: 'Infrastructure', hoa_notice: 'HOA Notice', general: 'General',
 };
 
 const CATEGORY_STYLES = {
-  safety:         'bg-red-100 text-red-700',
-  lost_pet:       'bg-orange-100 text-orange-700',
-  wildlife:       'bg-yellow-100 text-yellow-800',
-  infrastructure: 'bg-purple-100 text-purple-700',
-  hoa_notice:     'bg-blue-100 text-blue-700',
-  general:        'bg-gray-100 text-gray-600',
+  safety: 'bg-red-100 text-red-700', lost_pet: 'bg-orange-100 text-orange-700',
+  wildlife: 'bg-yellow-100 text-yellow-800', infrastructure: 'bg-purple-100 text-purple-700',
+  hoa_notice: 'bg-blue-100 text-blue-700', general: 'bg-gray-100 text-gray-600',
 };
 
 function timeAgo(dateStr) {
@@ -32,24 +24,31 @@ function timeAgo(dateStr) {
 }
 
 export default function CommunityBoard({ currentUserEmail, isAdmin, onViewed }) {
-  const [posts,       setPosts]      = useState([]);
-  const [catFilter,   setCatFilter]  = useState('all');
-  const [showForm,    setShowForm]   = useState(false);
-  const [submitting,  setSubmitting] = useState(false);
-  const [loading,     setLoading]    = useState(true);
+  const [posts,      setPosts]     = useState([]);
+  const [zones,      setZones]     = useState([]);
+  const [catFilter,  setCatFilter] = useState('all');
+  const [showForm,   setShowForm]  = useState(false);
+  const [submitting, setSubmitting]= useState(false);
+  const [loading,    setLoading]   = useState(true);
 
   // Form state
   const [title,    setTitle]    = useState('');
   const [body,     setBody]     = useState('');
   const [category, setCategory] = useState('general');
   const [image,    setImage]    = useState(null);
+  const [zoneId,   setZoneId]   = useState('');  // '' = All HOA
+
+  useEffect(() => {
+    if (isAdmin) {
+      getZones().then(setZones).catch(() => {});
+    }
+  }, [isAdmin]);
 
   useEffect(() => {
     setLoading(true);
     getCommunityPosts(catFilter)
       .then(posts => {
         setPosts(posts);
-        // Mark community as seen — update localStorage and notify parent to clear dot
         localStorage.setItem('community_last_seen', new Date().toISOString());
         onViewed?.();
       })
@@ -66,11 +65,12 @@ export default function CommunityBoard({ currentUserEmail, isAdmin, onViewed }) 
       form.append('title',    title.trim());
       form.append('body',     body.trim());
       form.append('category', category);
-      if (image) form.append('image', image);
+      if (image)  form.append('image',   image);
+      if (zoneId) form.append('zone_id', zoneId);
 
       const post = await createCommunityPost(form);
       setPosts(prev => [post, ...prev]);
-      setTitle(''); setBody(''); setCategory('general'); setImage(null);
+      setTitle(''); setBody(''); setCategory('general'); setImage(null); setZoneId('');
       setShowForm(false);
     } catch (err) {
       alert('Failed to post: ' + err.message);
@@ -99,9 +99,7 @@ export default function CommunityBoard({ currentUserEmail, isAdmin, onViewed }) 
               key={c}
               onClick={() => setCatFilter(c)}
               className={`px-3 py-1 text-xs font-semibold rounded-full transition ${
-                catFilter === c
-                  ? 'bg-blue-900 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                catFilter === c ? 'bg-blue-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}
             >
               {CATEGORY_LABELS[c]}
@@ -121,43 +119,46 @@ export default function CommunityBoard({ currentUserEmail, isAdmin, onViewed }) 
         <form onSubmit={handleSubmit} className="bg-white border rounded-xl p-5 space-y-3">
           <h3 className="font-semibold text-gray-800">New Announcement</h3>
           <input
-            type="text"
-            placeholder="Title"
-            value={title}
-            onChange={e => setTitle(e.target.value)}
-            maxLength={255}
-            required
+            type="text" placeholder="Title" value={title}
+            onChange={e => setTitle(e.target.value)} maxLength={255} required
             className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
           />
           <select
-            value={category}
-            onChange={e => setCategory(e.target.value)}
+            value={category} onChange={e => setCategory(e.target.value)}
             className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
           >
             {CATEGORIES.filter(c => c !== 'all').map(c => (
               <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>
             ))}
           </select>
+
+          {/* Zone targeting — admin only */}
+          {isAdmin && (
+            <div>
+              <label className="text-xs text-gray-500 block mb-1">Target audience</label>
+              <select
+                value={zoneId} onChange={e => setZoneId(e.target.value)}
+                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+              >
+                <option value="">All HOA</option>
+                {zones.map(z => (
+                  <option key={z.id} value={z.id}>{z.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <textarea
-            placeholder="Describe the situation..."
-            value={body}
-            onChange={e => setBody(e.target.value)}
-            required
-            rows={4}
+            placeholder="Describe the situation..." value={body}
+            onChange={e => setBody(e.target.value)} required rows={4}
             className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
           />
           <div>
             <label className="text-xs text-gray-500 block mb-1">Photo (optional)</label>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={e => setImage(e.target.files[0] || null)}
-              className="text-sm text-gray-600"
-            />
+            <input type="file" accept="image/*" onChange={e => setImage(e.target.files[0] || null)} className="text-sm text-gray-600" />
           </div>
           <button
-            type="submit"
-            disabled={submitting}
+            type="submit" disabled={submitting}
             className="px-5 py-2 text-sm font-semibold bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 transition"
           >
             {submitting ? 'Posting...' : 'Post Announcement'}
@@ -179,10 +180,17 @@ export default function CommunityBoard({ currentUserEmail, isAdmin, onViewed }) 
                   <span className={`text-xs font-semibold px-2 py-1 rounded-full ${CATEGORY_STYLES[post.category]}`}>
                     {CATEGORY_LABELS[post.category]}
                   </span>
+                  {/* Zone badge */}
+                  {post.zone_name && (
+                    <span
+                      className="text-xs font-semibold px-2 py-1 rounded-full"
+                      style={{ backgroundColor: (post.zone_color || '#3B82F6') + '22', color: post.zone_color || '#3B82F6' }}
+                    >
+                      {post.zone_name}
+                    </span>
+                  )}
                   <span className="text-sm font-medium text-gray-800">{post.author_name}</span>
-                  <span className="text-xs text-gray-400">
-                    · {post.author_role === 'admin' ? 'HOA Admin' : 'Resident'}
-                  </span>
+                  <span className="text-xs text-gray-400">· {post.author_role === 'admin' ? 'HOA Admin' : 'Resident'}</span>
                   <span className="text-xs text-gray-400">· {timeAgo(post.created_at)}</span>
                 </div>
                 {(post.author_email === currentUserEmail || isAdmin) && (
@@ -198,11 +206,7 @@ export default function CommunityBoard({ currentUserEmail, isAdmin, onViewed }) 
               <h4 className="mt-2 font-semibold text-gray-900">{post.title}</h4>
               <p className="mt-1 text-sm text-gray-700 whitespace-pre-wrap">{post.body}</p>
               {post.image_url && (
-                <img
-                  src={post.image_url}
-                  alt="Post photo"
-                  className="mt-3 rounded-lg border max-h-64 object-cover"
-                />
+                <img src={post.image_url} alt="Post photo" className="mt-3 rounded-lg border max-h-64 object-cover" />
               )}
             </div>
           ))}
