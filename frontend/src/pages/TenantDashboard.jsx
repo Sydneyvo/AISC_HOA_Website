@@ -49,6 +49,9 @@ export default function TenantDashboard({ initialData }) {
   const [flagging, setFlagging]     = useState(null);
   const [fixPhotos, setFixPhotos]   = useState({}); // violationId → File
   const [paying, setPaying]         = useState(null);
+  const [showAllBills, setShowAllBills] = useState(false);
+
+  const BILLS_PREVIEW = 3;
   const [activeTab, setActiveTab]       = useState('property');
   const [communityUnread, setCommunityUnread] = useState(false);
 
@@ -275,37 +278,49 @@ export default function TenantDashboard({ initialData }) {
               {bills.length === 0 ? (
                 <p className="p-6 text-gray-400 text-sm">No bills yet.</p>
               ) : (
-                <div className="divide-y">
-                  {bills.map(bill => (
-                    <div key={bill.id} className="px-6 py-4 flex items-center justify-between gap-4">
-                      <div className="min-w-0">
-                        <p className="font-medium text-gray-800">{fmtMonth(bill.billing_month)}</p>
-                        <p className="text-sm text-gray-500">
-                          Base {fmt(bill.base_amount)}
-                          {parseFloat(bill.violation_fines) > 0 && ` + fines ${fmt(bill.violation_fines)}`}
-                          {' · '}Due {fmtDate(bill.due_date)}
-                        </p>
+                <>
+                  <div className="divide-y">
+                    {(showAllBills ? bills : bills.slice(0, BILLS_PREVIEW)).map(bill => (
+                      <div key={bill.id} className="px-6 py-4 flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-800">{fmtMonth(bill.billing_month)}</p>
+                          <p className="text-sm text-gray-500">
+                            Base {fmt(bill.base_amount)}
+                            {parseFloat(bill.violation_fines) > 0 && ` + fines ${fmt(bill.violation_fines)}`}
+                            {' · '}Due {fmtDate(bill.due_date)}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          <span className={`text-xs font-semibold px-2 py-1 rounded-full ${BILL_STATUS_COLORS[bill.status]}`}>
+                            {bill.status.toUpperCase()}
+                          </span>
+                          <span className="font-semibold text-gray-800">{fmt(bill.total_amount)}</span>
+                          {bill.status !== 'paid' ? (
+                            <button
+                              disabled={paying === bill.id}
+                              onClick={() => handlePayBill(bill.id)}
+                              className="px-3 py-1.5 text-sm font-semibold bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 transition"
+                            >
+                              {paying === bill.id ? 'Saving...' : 'Pay Now'}
+                            </button>
+                          ) : bill.paid_at ? (
+                            <span className="text-xs text-gray-400">Paid {fmtDate(bill.paid_at)}</span>
+                          ) : null}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-3 flex-shrink-0">
-                        <span className={`text-xs font-semibold px-2 py-1 rounded-full ${BILL_STATUS_COLORS[bill.status]}`}>
-                          {bill.status.toUpperCase()}
-                        </span>
-                        <span className="font-semibold text-gray-800">{fmt(bill.total_amount)}</span>
-                        {bill.status !== 'paid' ? (
-                          <button
-                            disabled={paying === bill.id}
-                            onClick={() => handlePayBill(bill.id)}
-                            className="px-3 py-1.5 text-sm font-semibold bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 transition"
-                          >
-                            {paying === bill.id ? 'Saving...' : 'Pay Now'}
-                          </button>
-                        ) : bill.paid_at ? (
-                          <span className="text-xs text-gray-400">Paid {fmtDate(bill.paid_at)}</span>
-                        ) : null}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                  {bills.length > BILLS_PREVIEW && (
+                    <button
+                      onClick={() => setShowAllBills(v => !v)}
+                      className="w-full py-2.5 text-xs font-semibold text-blue-600 hover:bg-blue-50 transition border-t"
+                    >
+                      {showAllBills
+                        ? 'Show less ▲'
+                        : `Show ${bills.length - BILLS_PREVIEW} older month${bills.length - BILLS_PREVIEW !== 1 ? 's' : ''} ▼`}
+                    </button>
+                  )}
+                </>
               )}
             </div>
 

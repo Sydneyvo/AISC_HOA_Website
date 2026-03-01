@@ -341,28 +341,7 @@ export default function Dashboard() {
       )}
 
       {activeTab === 'finance' && (
-        <div className="flex gap-4" style={{ minHeight: 520 }}>
-          {/* Left: finance table */}
-          <div style={{ width: '52%' }}>
-            <FinanceTable data={financeData} onBillPaid={handleBillPaid} />
-          </div>
-          {/* Right: map in finance mode */}
-          <div className="relative flex-1" style={{ minHeight: 480 }}>
-            <MapPanel
-              properties={properties}
-              zones={zones}
-              mode="finance"
-              highlightedId={highlightId}
-              onPropertyClick={p => setHighlightId(p.id)}
-              onZoneClick={z => setSelectedZone(z)}
-            />
-            <ZoneStatsSidebar
-              zone={selectedZone}
-              properties={properties}
-              onClose={() => setSelectedZone(null)}
-            />
-          </div>
-        </div>
+        <FinanceTable data={financeData} onBillPaid={handleBillPaid} />
       )}
 
       {activeTab === 'violations' && (
