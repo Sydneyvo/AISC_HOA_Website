@@ -27,7 +27,7 @@ CREATE TABLE violations (
   remediation    TEXT,
   deadline_days  INTEGER DEFAULT 14,
 
-  status         VARCHAR(20) DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
+  status         VARCHAR(20) DEFAULT 'open' CHECK (status IN ('open', 'pending_review', 'resolved')),
   image_url      TEXT,
 
   notice_sent_at TIMESTAMP,
