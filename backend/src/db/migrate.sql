@@ -106,3 +106,6 @@ WHERE NOT EXISTS (SELECT 1 FROM properties WHERE owner_email = 'mike@example.com
 INSERT INTO properties (address, owner_name, owner_email, owner_phone, resident_since, land_area_sqft, compliance_score, combined_score, latitude, longitude)
 SELECT '987 NE 15th Ave, Seattle, WA', 'Lisa Wang', 'lisa@example.com', '555-0110', 2020, 5800, 95, 91, 47.6500, -122.3060
 WHERE NOT EXISTS (SELECT 1 FROM properties WHERE owner_email = 'lisa@example.com');
+
+-- Migration: fix photo on violations (tenant uploads proof when flagging as fixed)
+ALTER TABLE violations ADD COLUMN IF NOT EXISTS fix_photo_url TEXT;

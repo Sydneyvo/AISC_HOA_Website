@@ -1,9 +1,24 @@
-import { useState, useMemo } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, GeoJSON } from 'react-leaflet';
+import { useState, useMemo, useEffect } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, GeoJSON, useMap } from 'react-leaflet';
+import MarkerClusterGroup from 'react-leaflet-cluster';
+import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import L from 'leaflet';
 
 // UW Seattle default center
 const DEFAULT_CENTER = [47.655, -122.308];
+
+// Smoothly pan to a property when highlightedId changes
+function FlyToEffect({ focusId, properties }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!focusId) return;
+    const prop = properties.find(p => p.id === focusId);
+    if (prop?.latitude && prop?.longitude) {
+      map.panTo([parseFloat(prop.latitude), parseFloat(prop.longitude)], { animate: true });
+    }
+  }, [focusId]); // eslint-disable-line react-hooks/exhaustive-deps
+  return null;
+}
 
 // Create a colored circular DivIcon for property pins
 function makePinIcon(color, isActive) {
@@ -54,7 +69,7 @@ function computeCenter(properties) {
   ];
 }
 
-export default function MapPanel({ properties, zones, mode, highlightedId, onPropertyClick, onZoneClick }) {
+export default function MapPanel({ properties, zones, mode, highlightedId, filterZoneId, onPropertyClick, onZoneClick }) {
   const [hoveredId, setHoveredId] = useState(null);
 
   const center = useMemo(() => computeCenter(properties), [properties]);
@@ -62,10 +77,12 @@ export default function MapPanel({ properties, zones, mode, highlightedId, onPro
   const zoneStyle = (zone) => () => ({
     color:       zone.color,
     fillColor:   zone.color,
-    fillOpacity: 0.15,
-    weight:      2,
+    fillOpacity: filterZoneId && String(zone.id) !== filterZoneId ? 0.05 : 0.15,
+    weight:      filterZoneId && String(zone.id) === filterZoneId ? 3   : 2,
     dashArray:   '6 3',
   });
+
+  const mappableProps = properties.filter(p => p.latitude && p.longitude);
 
   return (
     <div className="h-full rounded-xl overflow-hidden border border-gray-200">
@@ -80,50 +97,66 @@ export default function MapPanel({ properties, zones, mode, highlightedId, onPro
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
         />
 
+        {/* Pan to hovered property */}
+        <FlyToEffect focusId={highlightedId} properties={properties} />
+
         {/* Zone polygon overlays */}
         {zones.filter(z => z.geojson).map(zone => (
           <GeoJSON
-            key={`${zone.id}-${zone.color}`}
+            key={`${zone.id}-${zone.color}-${filterZoneId}`}
             data={{ type: 'Feature', geometry: zone.geojson }}
             style={zoneStyle(zone)}
             eventHandlers={{ click: () => onZoneClick?.(zone) }}
           />
         ))}
 
-        {/* Property pins */}
-        {properties.filter(p => p.latitude && p.longitude).map(p => {
-          const color    = getPinColor(p, mode);
-          const isActive = highlightedId === p.id || hoveredId === p.id;
-          return (
-            <Marker
-              key={p.id}
-              position={[parseFloat(p.latitude), parseFloat(p.longitude)]}
-              icon={makePinIcon(color, isActive)}
-              eventHandlers={{
-                click:     () => onPropertyClick?.(p),
-                mouseover: () => setHoveredId(p.id),
-                mouseout:  () => setHoveredId(null),
-              }}
-            >
-              <Popup>
-                <div className="text-xs space-y-1 min-w-[160px]">
-                  <p className="font-semibold text-gray-900 text-sm leading-tight">{p.address}</p>
-                  <p className="text-gray-500">{p.owner_name}</p>
-                  <p className="text-gray-700">{pinStat(p, mode)}</p>
-                  {mode !== 'finance' && (
-                    <p className="text-gray-500">{p.open_violations} open violation{p.open_violations !== '1' ? 's' : ''}</p>
-                  )}
-                  <a
-                    href={`/properties/${p.id}`}
-                    className="block mt-2 text-center px-3 py-1 bg-blue-700 text-white rounded font-semibold hover:bg-blue-800 transition"
-                  >
-                    View Property →
-                  </a>
-                </div>
-              </Popup>
-            </Marker>
-          );
-        })}
+        {/* Property pins with clustering */}
+        <MarkerClusterGroup chunkedLoading>
+          {mappableProps.map(p => {
+            const inZone = !filterZoneId || (() => {
+              const zone = zones?.find(z => String(z.id) === filterZoneId);
+              if (!zone?.geojson || !p.latitude || !p.longitude) return false;
+              try {
+                return booleanPointInPolygon(
+                  { type: 'Feature', geometry: { type: 'Point', coordinates: [parseFloat(p.longitude), parseFloat(p.latitude)] } },
+                  { type: 'Feature', geometry: zone.geojson }
+                );
+              } catch { return false; }
+            })();
+            const color    = getPinColor(p, mode);
+            const isActive = highlightedId === p.id || hoveredId === p.id;
+            return (
+              <Marker
+                key={p.id}
+                position={[parseFloat(p.latitude), parseFloat(p.longitude)]}
+                icon={makePinIcon(color, isActive)}
+                opacity={inZone ? 1 : 0.2}
+                eventHandlers={{
+                  click:     () => onPropertyClick?.(p),
+                  mouseover: () => setHoveredId(p.id),
+                  mouseout:  () => setHoveredId(null),
+                }}
+              >
+                <Popup>
+                  <div className="text-xs space-y-1 min-w-[160px]">
+                    <p className="font-semibold text-gray-900 text-sm leading-tight">{p.address}</p>
+                    <p className="text-gray-500">{p.owner_name}</p>
+                    <p className="text-gray-700">{pinStat(p, mode)}</p>
+                    {mode !== 'finance' && (
+                      <p className="text-gray-500">{p.open_violations} open violation{p.open_violations !== '1' ? 's' : ''}</p>
+                    )}
+                    <a
+                      href={`/properties/${p.id}`}
+                      className="block mt-2 text-center px-3 py-1 bg-blue-700 text-white rounded font-semibold hover:bg-blue-800 transition"
+                    >
+                      View Property →
+                    </a>
+                  </div>
+                </Popup>
+              </Marker>
+            );
+          })}
+        </MarkerClusterGroup>
       </MapContainer>
     </div>
   );

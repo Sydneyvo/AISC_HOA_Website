@@ -117,11 +117,21 @@ export const getTenantMe = async () =>
     headers: await authHeaders(),
   }).then(json);
 
-export const flagViolationFixed = async (id) =>
-  fetch(`${BASE}/api/tenant/violations/${id}/flag-fixed`, {
+export const flagViolationFixed = async (id, imageFile = null) => {
+  if (imageFile) {
+    const form = new FormData();
+    form.append('image', imageFile);
+    return fetch(`${BASE}/api/tenant/violations/${id}/flag-fixed`, {
+      method: 'PATCH',
+      headers: await authHeaders(),
+      body: form,
+    }).then(json);
+  }
+  return fetch(`${BASE}/api/tenant/violations/${id}/flag-fixed`, {
     method: 'PATCH',
     headers: await authHeaders(),
   }).then(json);
+};
 
 export const tenantPayBill = async (id) =>
   fetch(`${BASE}/api/tenant/bills/${id}/pay`, {
@@ -188,3 +198,16 @@ export const deleteZone = async (id) =>
     method: 'DELETE',
     headers: await authHeaders(),
   }).then(json);
+
+// Global violation search
+export const searchViolations = async ({ search = '', category = '', severity = '', status = '' } = {}) => {
+  const params = new URLSearchParams();
+  if (search)   params.set('search',   search);
+  if (category) params.set('category', category);
+  if (severity) params.set('severity', severity);
+  if (status)   params.set('status',   status);
+  const qs = params.toString();
+  return fetch(`${BASE}/api/violations${qs ? `?${qs}` : ''}`, {
+    headers: await authHeaders(),
+  }).then(json);
+};

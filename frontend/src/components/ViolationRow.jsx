@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { resolveViolation } from '../api';
+import ViolationReviewModal from './ViolationReviewModal';
 
 const SEVERITY_STYLES = {
   low:    'bg-green-100 text-green-800',
@@ -7,16 +9,23 @@ const SEVERITY_STYLES = {
   high:   'bg-red-100 text-red-800',
 };
 
+const STATUS_STYLES = {
+  open:           'bg-orange-100 text-orange-700',
+  pending_review: 'bg-blue-100 text-blue-700',
+  resolved:       'bg-gray-100 text-gray-600',
+};
+
 function daysRemaining(createdAt, deadlineDays) {
   const deadline = new Date(createdAt);
   deadline.setDate(deadline.getDate() + deadlineDays);
-  const diff = Math.ceil((deadline - Date.now()) / (1000 * 60 * 60 * 24));
-  return diff;
+  return Math.ceil((deadline - Date.now()) / (1000 * 60 * 60 * 24));
 }
 
-export default function ViolationRow({ violation, onResolved }) {
+export default function ViolationRow({ violation, onResolved, onReopened }) {
+  const [showReview, setShowReview] = useState(false);
+
   const handleResolve = async () => {
-    if (!window.confirm('Mark this violation as resolved?')) return;
+    if (!window.confirm('Confirm this violation is resolved?')) return;
     await resolveViolation(violation.id);
     onResolved(violation.id);
   };
@@ -41,14 +50,23 @@ export default function ViolationRow({ violation, onResolved }) {
       <td className="py-3 px-4 text-sm text-gray-600 max-w-xs">
         <p className="truncate">{violation.description}</p>
         {violation.status === 'open' && remaining !== null && (
-          <p className={`text-xs mt-0.5 font-medium ${remaining <= 3 ? 'text-red-500' : remaining <= 7 ? 'text-orange-500' : 'text-gray-400'}`}>
-            {remaining > 0 ? `${remaining}d to resolve` : remaining === 0 ? 'Due today' : `${Math.abs(remaining)}d overdue`}
+          <p className={`text-xs mt-0.5 font-medium ${
+            remaining <= 3 ? 'text-red-500' : remaining <= 7 ? 'text-orange-500' : 'text-gray-400'
+          }`}>
+            {remaining > 0
+              ? `${remaining}d to resolve`
+              : remaining === 0
+              ? 'Due today'
+              : `${Math.abs(remaining)}d overdue`}
           </p>
         )}
         {violation.status === 'resolved' && violation.resolved_at && (
           <p className="text-xs mt-0.5 text-green-600">
             Resolved {new Date(violation.resolved_at).toLocaleDateString()}
           </p>
+        )}
+        {violation.status === 'pending_review' && (
+          <p className="text-xs mt-0.5 text-blue-600">Tenant marked as fixed</p>
         )}
       </td>
       <td className="py-3 px-4 text-sm text-gray-600">
@@ -57,9 +75,9 @@ export default function ViolationRow({ violation, onResolved }) {
       <td className="py-3 px-4">
         <div className="flex flex-col gap-1">
           <span className={`text-xs font-semibold px-2 py-1 rounded-full w-fit ${
-            violation.status === 'resolved' ? 'bg-gray-100 text-gray-600' : 'bg-orange-100 text-orange-700'
+            STATUS_STYLES[violation.status] || 'bg-gray-100 text-gray-600'
           }`}>
-            {violation.status}
+            {violation.status === 'pending_review' ? 'Pending Review' : violation.status}
           </span>
           {violation.notice_sent_at && (
             <span className="text-xs text-blue-500">
@@ -81,6 +99,14 @@ export default function ViolationRow({ violation, onResolved }) {
               Resolve
             </button>
           )}
+          {violation.status === 'pending_review' && (
+            <button
+              onClick={() => setShowReview(true)}
+              className="text-sm font-semibold text-blue-600 hover:underline"
+            >
+              Review Fix →
+            </button>
+          )}
           {violation.image_url && (
             <a href={violation.image_url} target="_blank" rel="noreferrer"
               className="text-xs text-gray-400 hover:underline">
@@ -89,6 +115,14 @@ export default function ViolationRow({ violation, onResolved }) {
           )}
         </div>
       </td>
+      {showReview && (
+        <ViolationReviewModal
+          violation={violation}
+          onClose={() => setShowReview(false)}
+          onConfirmed={onResolved}
+          onRejected={onReopened}
+        />
+      )}
     </tr>
   );
 }

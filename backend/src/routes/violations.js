@@ -82,6 +82,38 @@ router.post('/', async (req, res) => {
   }
 });
 
+// GET /api/violations — global search across all properties
+router.get('/', async (req, res) => {
+  try {
+    const { search, category, severity, status } = req.query;
+    const conditions = [];
+    const params     = [];
+
+    if (search) {
+      params.push(`%${search.toLowerCase()}%`);
+      const n = params.length;
+      conditions.push(`(LOWER(v.description) LIKE $${n} OR LOWER(p.address) LIKE $${n} OR LOWER(p.owner_name) LIKE $${n})`);
+    }
+    if (category) { params.push(category); conditions.push(`v.category = $${params.length}`); }
+    if (severity) { params.push(severity); conditions.push(`v.severity = $${params.length}`); }
+    if (status)   { params.push(status);   conditions.push(`v.status   = $${params.length}`); }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const { rows } = await db.query(
+      `SELECT v.*, p.address, p.owner_name
+       FROM violations v
+       JOIN properties p ON p.id = v.property_id
+       ${where}
+       ORDER BY v.created_at DESC
+       LIMIT 500`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/violations/:id
 router.get('/:id', async (req, res) => {
   try {

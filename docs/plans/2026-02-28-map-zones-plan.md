@@ -2,11 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task.
 
-**Goal:** Add a Mapbox split-panel map to the Properties and Finance tabs, admin-drawn zone polygons persisted as GeoJSON, a map-based property pin picker for property creation, and zone-targeted community announcements.
+**Goal:** Add a split-panel map to the Properties and Finance tabs, admin-drawn zone polygons persisted as GeoJSON, a map-based property pin picker for property creation, and zone-targeted community announcements.
 
-**Architecture:** A reusable `MapPanel` component handles compliance and finance pin modes. Zones are stored as GeoJSON geometries in a `zones` DB table. `@mapbox/mapbox-gl-draw` powers the zone drawing UI at `/settings/zones`. `@turf/boolean-point-in-polygon` runs client-side to auto-detect zone when admin places a property pin.
+**Architecture:** A reusable `MapPanel` component handles compliance and finance pin modes. Zones are stored as GeoJSON geometries in a `zones` DB table. `leaflet-geoman` powers the zone drawing UI at `/settings/zones`. `@turf/boolean-point-in-polygon` runs client-side to auto-detect zone when admin places a property pin.
 
-**Tech Stack:** react-map-gl v7, mapbox-gl v2, @mapbox/mapbox-gl-draw, @turf/boolean-point-in-polygon (frontend + backend), Mapbox public token via `VITE_MAPBOX_TOKEN`
+**Tech Stack:** react-leaflet v4, leaflet v1, @geoman-io/leaflet-geoman-free, @turf/boolean-point-in-polygon — **no API keys, no accounts, no billing required**
 
 ---
 
@@ -368,65 +368,52 @@ git commit -m "feat: add zone targeting to community posts"
 
 ---
 
-### Task 6: Frontend — Install Packages + CSS + Vite Config
+### Task 6: Frontend — Install Packages + CSS + Leaflet Icon Fix
 
 **Files:**
 - Modify: `frontend/package.json` (via npm install)
-- Modify: `frontend/vite.config.js`
 - Modify: `frontend/src/main.jsx`
+- No changes to `vite.config.js` needed (Leaflet works with default Vite config)
 
 **Step 1: Install packages**
 
 ```bash
-cd frontend && npm install react-map-gl mapbox-gl @mapbox/mapbox-gl-draw @turf/boolean-point-in-polygon
+cd frontend && npm install leaflet react-leaflet @geoman-io/leaflet-geoman-free @turf/boolean-point-in-polygon
 ```
 
 Expected: packages added to package.json, no peer dep errors.
 
-**Step 2: Update `frontend/vite.config.js`**
+**Step 2: Update `frontend/src/main.jsx`**
 
-Replace entire file with:
-
-```js
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-
-export default defineConfig({
-  plugins: [react()],
-  optimizeDeps: {
-    exclude: ['mapbox-gl'],
-  },
-});
-```
-
-**Step 3: Add CSS imports to `frontend/src/main.jsx`**
-
-Read the current main.jsx. Add these two imports after the existing imports (before the ReactDOM.createRoot call):
+Read the current main.jsx. Add these imports after the existing imports (before the ReactDOM.createRoot call):
 
 ```js
-import 'mapbox-gl/dist/mapbox-gl.css';
-import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
+import 'leaflet/dist/leaflet.css';
+import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
+
+// Fix Leaflet default marker icon broken in Vite (known issue)
+import L from 'leaflet';
+import iconUrl         from 'leaflet/dist/images/marker-icon.png';
+import iconRetinaUrl   from 'leaflet/dist/images/marker-icon-2x.png';
+import shadowUrl       from 'leaflet/dist/images/marker-shadow.png';
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({ iconUrl, iconRetinaUrl, shadowUrl });
 ```
 
-**Step 4: Add Mapbox token to `.env`**
+**Step 3: No token needed — no `.env` changes required**
 
-In `frontend/`, open or create `.env` (already exists — add the line):
-```
-VITE_MAPBOX_TOKEN=pk.eyJ1...your_token_here
-```
+OpenStreetMap tiles are free and require no API key.
 
-The user must obtain a free Mapbox public token from https://account.mapbox.com
-
-**Step 5: Verify frontend still starts**
+**Step 4: Verify frontend still starts**
 ```bash
 cd frontend && npm run dev
 ```
 Expected: Vite dev server starts on port 5173 with no errors.
 
-**Step 6: Commit**
+**Step 5: Commit**
 ```bash
-git add frontend/vite.config.js frontend/src/main.jsx frontend/package.json frontend/package-lock.json
-git commit -m "feat: install react-map-gl, mapbox-gl, draw, turf packages"
+git add frontend/src/main.jsx frontend/package.json frontend/package-lock.json
+git commit -m "feat: install react-leaflet, leaflet-geoman, turf packages"
 ```
 
 ---
@@ -486,19 +473,38 @@ git commit -m "feat: add zones API helpers to frontend api.js"
 **Step 1: Create the component**
 
 ```jsx
-import { useState, useCallback, useMemo } from 'react';
-import Map, { Marker, Popup, Source, Layer, NavigationControl } from 'react-map-gl';
+import { useState, useMemo } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, GeoJSON, useMap } from 'react-leaflet';
+import L from 'leaflet';
 
-const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
+// UW Seattle default center
+const DEFAULT_CENTER = [47.655, -122.308];
 
-// Pin color based on tab mode
+// Create a colored circular DivIcon for property pins
+function makePinIcon(color, isActive) {
+  const size = isActive ? 20 : 14;
+  return L.divIcon({
+    className: '',
+    html: `<div style="
+      width:${size}px;height:${size}px;
+      background:${color};
+      border-radius:50%;
+      border:2px solid white;
+      box-shadow:0 1px 4px rgba(0,0,0,0.35);
+      ${isActive ? 'outline:3px solid #60A5FA;outline-offset:1px;' : ''}
+    "></div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    popupAnchor: [0, -(size / 2 + 4)],
+  });
+}
+
 function getPinColor(property, mode) {
   if (mode === 'finance') {
-    if (parseInt(property.overdue_bills) > 0) return '#EF4444'; // red
-    if (parseFloat(property.total_owed) > 0)  return '#F59E0B'; // yellow
-    return '#10B981'; // green
+    if (parseInt(property.overdue_bills) > 0) return '#EF4444';
+    if (parseFloat(property.total_owed) > 0)  return '#F59E0B';
+    return '#10B981';
   }
-  // compliance mode
   const score = property.combined_score ?? property.compliance_score ?? 100;
   if (score < 50) return '#EF4444';
   if (score < 80) return '#F59E0B';
@@ -513,137 +519,90 @@ function pinStat(property, mode) {
   return `Score ${property.combined_score ?? property.compliance_score ?? 100}`;
 }
 
+// Compute map center from properties or fall back to UW Seattle default
+function computeCenter(properties) {
+  const withCoords = properties.filter(p => p.latitude && p.longitude);
+  if (!withCoords.length) return DEFAULT_CENTER;
+  return [
+    withCoords.reduce((s, p) => s + parseFloat(p.latitude),  0) / withCoords.length,
+    withCoords.reduce((s, p) => s + parseFloat(p.longitude), 0) / withCoords.length,
+  ];
+}
+
 export default function MapPanel({ properties, zones, mode, highlightedId, onPropertyClick, onZoneClick }) {
-  const [popup,     setPopup]     = useState(null); // property object
   const [hoveredId, setHoveredId] = useState(null);
 
-  // Build a GeoJSON FeatureCollection from zones for the Source layer
-  const zonesGeoJSON = useMemo(() => ({
-    type: 'FeatureCollection',
-    features: zones
-      .filter(z => z.geojson)
-      .map(z => ({
-        type: 'Feature',
-        id: z.id,
-        properties: { id: z.id, name: z.name, color: z.color },
-        geometry: z.geojson,
-      })),
-  }), [zones]);
+  const center = useMemo(() => computeCenter(properties), [properties]);
 
-  // Default center: UW Seattle. Falls back to average of properties if any have coords.
-  const { centerLng, centerLat } = useMemo(() => {
-    const withCoords = properties.filter(p => p.latitude && p.longitude);
-    if (!withCoords.length) return { centerLng: -122.308, centerLat: 47.655 };
-    return {
-      centerLng: withCoords.reduce((s, p) => s + parseFloat(p.longitude), 0) / withCoords.length,
-      centerLat: withCoords.reduce((s, p) => s + parseFloat(p.latitude),  0) / withCoords.length,
-    };
-  }, [properties]);
-
-  const handleMapClick = useCallback((event) => {
-    const feature = event.features?.[0];
-    if (feature?.layer?.id === 'zone-fill') {
-      const zone = zones.find(z => z.id === feature.properties.id);
-      if (zone) onZoneClick?.(zone);
-      setPopup(null);
-    }
-  }, [zones, onZoneClick]);
-
-  if (!TOKEN) {
-    return (
-      <div className="flex items-center justify-center h-full bg-gray-100 rounded-xl text-gray-400 text-sm">
-        Set VITE_MAPBOX_TOKEN to enable map
-      </div>
-    );
-  }
+  // Style function for zone polygons
+  const zoneStyle = (zone) => () => ({
+    color:       zone.color,
+    fillColor:   zone.color,
+    fillOpacity: 0.15,
+    weight:      2,
+    dashArray:   '6 3',
+  });
 
   return (
-    <div className="relative h-full rounded-xl overflow-hidden border border-gray-200">
-      <Map
-        mapboxAccessToken={TOKEN}
-        initialViewState={{ longitude: centerLng, latitude: centerLat, zoom: 13.5 }}
+    <div className="h-full rounded-xl overflow-hidden border border-gray-200">
+      <MapContainer
+        center={center}
+        zoom={13.5}
         style={{ width: '100%', height: '100%' }}
-        mapStyle="mapbox://styles/mapbox/streets-v12"
-        interactiveLayerIds={['zone-fill']}
-        onClick={handleMapClick}
+        scrollWheelZoom={true}
       >
-        <NavigationControl position="top-right" />
+        <TileLayer
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        />
 
-        {/* Zone polygon fills + outlines */}
-        {zonesGeoJSON.features.length > 0 && (
-          <Source id="zones" type="geojson" data={zonesGeoJSON}>
-            <Layer
-              id="zone-fill"
-              type="fill"
-              paint={{
-                'fill-color': ['get', 'color'],
-                'fill-opacity': 0.15,
-              }}
-            />
-            <Layer
-              id="zone-outline"
-              type="line"
-              paint={{
-                'line-color': ['get', 'color'],
-                'line-width': 2,
-                'line-dasharray': [2, 1],
-              }}
-            />
-          </Source>
-        )}
+        {/* Zone polygon overlays */}
+        {zones.filter(z => z.geojson).map(zone => (
+          <GeoJSON
+            key={`${zone.id}-${zone.color}`}
+            data={{ type: 'Feature', geometry: zone.geojson }}
+            style={zoneStyle(zone)}
+            eventHandlers={{
+              click: () => onZoneClick?.(zone),
+            }}
+          />
+        ))}
 
         {/* Property pins */}
         {properties.filter(p => p.latitude && p.longitude).map(p => {
-          const color     = getPinColor(p, mode);
-          const isActive  = highlightedId === p.id || hoveredId === p.id;
+          const color    = getPinColor(p, mode);
+          const isActive = highlightedId === p.id || hoveredId === p.id;
           return (
             <Marker
               key={p.id}
-              longitude={parseFloat(p.longitude)}
-              latitude={parseFloat(p.latitude)}
-              anchor="center"
+              position={[parseFloat(p.latitude), parseFloat(p.longitude)]}
+              icon={makePinIcon(color, isActive)}
+              eventHandlers={{
+                click:      () => { onPropertyClick?.(p); },
+                mouseover:  () => setHoveredId(p.id),
+                mouseout:   () => setHoveredId(null),
+              }}
             >
-              <div
-                title={p.address}
-                onClick={() => { setPopup(p); onPropertyClick?.(p); }}
-                onMouseEnter={() => setHoveredId(p.id)}
-                onMouseLeave={() => setHoveredId(null)}
-                style={{ backgroundColor: color }}
-                className={`cursor-pointer rounded-full border-2 border-white shadow-md transition-all ${
-                  isActive ? 'w-6 h-6 ring-2 ring-offset-1 ring-blue-400' : 'w-4 h-4'
-                }`}
-              />
+              <Popup>
+                <div className="text-xs space-y-1 min-w-[160px]">
+                  <p className="font-semibold text-gray-900 text-sm leading-tight">{p.address}</p>
+                  <p className="text-gray-500">{p.owner_name}</p>
+                  <p className="text-gray-700">{pinStat(p, mode)}</p>
+                  {mode === 'compliance' && (
+                    <p className="text-gray-500">{p.open_violations} open violation{p.open_violations !== '1' ? 's' : ''}</p>
+                  )}
+                  <a
+                    href={`/properties/${p.id}`}
+                    className="block mt-2 text-center px-3 py-1 bg-blue-700 text-white rounded font-semibold hover:bg-blue-800 transition"
+                  >
+                    View Property →
+                  </a>
+                </div>
+              </Popup>
             </Marker>
           );
         })}
-
-        {/* Popup on pin click */}
-        {popup && popup.latitude && popup.longitude && (
-          <Popup
-            longitude={parseFloat(popup.longitude)}
-            latitude={parseFloat(popup.latitude)}
-            onClose={() => setPopup(null)}
-            closeOnClick={false}
-            anchor="bottom"
-            offset={12}
-          >
-            <div className="text-xs space-y-1 min-w-[160px]">
-              <p className="font-semibold text-gray-900 text-sm leading-tight">{popup.address}</p>
-              <p className="text-gray-500">{popup.owner_name}</p>
-              <p className="text-gray-700">{pinStat(popup, mode)}</p>
-              {mode === 'compliance' && (
-                <p className="text-gray-500">{popup.open_violations} open violation{popup.open_violations !== '1' ? 's' : ''}</p>
-              )}
-              <a
-                href={`/properties/${popup.id}`}
-                className="block mt-2 text-center px-3 py-1 bg-blue-700 text-white rounded font-semibold hover:bg-blue-800 transition"
-              >
-                View Property →
-              </a>
-            </div>
-          </Popup>
-        )}
-      </Map>
+      </MapContainer>
     </div>
   );
 }
@@ -651,12 +610,12 @@ export default function MapPanel({ properties, zones, mode, highlightedId, onPro
 
 **Step 2: Verify no import errors**
 
-Start frontend dev server — no red console errors from MapPanel import.
+Start frontend dev server — no red console errors from MapPanel import. Map should render OpenStreetMap tiles.
 
 **Step 3: Commit**
 ```bash
 git add frontend/src/components/MapPanel.jsx
-git commit -m "feat: add MapPanel component with compliance and finance pin modes"
+git commit -m "feat: add MapPanel component with react-leaflet, compliance and finance pin modes"
 ```
 
 ---
@@ -757,8 +716,9 @@ git commit -m "feat: add ZoneStatsSidebar component"
 **Step 2: Replace the full content of `Dashboard.jsx`**
 
 ```jsx
-import { useState, useEffect, useRef } from 'react';
-import Map, { Marker, NavigationControl } from 'react-map-gl';
+import { useState, useEffect } from 'react';
+import { MapContainer, TileLayer, Marker, GeoJSON, useMapEvents } from 'react-leaflet';
+import L from 'leaflet';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import { getProperties, getViolationsTimeline, createProperty, deleteProperty, getFinance, getZones } from '../api';
 import PropertyCard       from '../components/PropertyCard';
@@ -768,16 +728,28 @@ import FinanceTable       from '../components/FinanceTable';
 import MapPanel           from '../components/MapPanel';
 import ZoneStatsSidebar   from '../components/ZoneStatsSidebar';
 
-const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
-
 const EMPTY_FORM = {
   address: '', owner_name: '', owner_email: '', owner_phone: '',
   resident_since: '', land_area_sqft: '',
   latitude: null, longitude: null, zone_id: null,
 };
 
-// UW Seattle default center
-const DEFAULT_CENTER = { longitude: -122.308, latitude: 47.655 };
+// UW Seattle default center [lat, lng] for Leaflet
+const DEFAULT_CENTER = [47.655, -122.308];
+
+// Inner component to capture map clicks for pin picker
+function PickerClickHandler({ onPick }) {
+  useMapEvents({ click: (e) => onPick(e.latlng) });
+  return null;
+}
+
+// Draggable pin icon for the picker
+const pickerIcon = L.divIcon({
+  className: '',
+  html: '<div style="width:18px;height:18px;background:#2563EB;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.4)"></div>',
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
+});
 
 export default function Dashboard() {
   const [activeTab, setActiveTab]     = useState('properties');
@@ -824,22 +796,20 @@ export default function Dashboard() {
     : 100;
 
   // Detect zone from coordinates using turf
-  const detectZone = (lng, lat) => {
+  const detectZone = (lat, lng) => {
     const point = { type: 'Feature', geometry: { type: 'Point', coordinates: [lng, lat] } };
     for (const zone of zones) {
       if (!zone.geojson) continue;
       try {
-        const poly = { type: 'Feature', geometry: zone.geojson };
-        if (booleanPointInPolygon(point, poly)) return zone;
+        if (booleanPointInPolygon(point, { type: 'Feature', geometry: zone.geojson })) return zone;
       } catch {}
     }
     return null;
   };
 
-  const handlePickerClick = (event) => {
-    const { lng, lat } = event.lngLat;
-    setPickerPin({ lng, lat });
-    const zone = detectZone(lng, lat);
+  const handlePickerClick = ({ lat, lng }) => {
+    setPickerPin({ lat, lng });
+    const zone = detectZone(lat, lng);
     setDetectedZone(zone);
     setForm(f => ({ ...f, latitude: lat, longitude: lng, zone_id: zone?.id || null }));
   };
@@ -1023,33 +993,35 @@ export default function Dashboard() {
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Location <span className="text-gray-400 font-normal">(click map to place pin)</span>
               </label>
-              {TOKEN ? (
-                <div className="rounded-lg overflow-hidden border" style={{ height: 220 }}>
-                  <Map
-                    mapboxAccessToken={TOKEN}
-                    initialViewState={{ longitude: DEFAULT_CENTER.longitude, latitude: DEFAULT_CENTER.latitude, zoom: 13 }}
-                    style={{ width: '100%', height: '100%' }}
-                    mapStyle="mapbox://styles/mapbox/streets-v12"
-                    cursor="crosshair"
-                    onClick={handlePickerClick}
-                  >
-                    <NavigationControl position="top-right" showCompass={false} />
-                    {/* Zone overlays for reference */}
-                    {zones.map(z => z.geojson && (
-                      <MapPanel.ZoneLayer key={z.id} zone={z} />
-                    ))}
-                    {pickerPin && (
-                      <Marker longitude={pickerPin.lng} latitude={pickerPin.lat} anchor="bottom" draggable
-                        onDrag={e => handlePickerClick({ lngLat: e.lngLat })}
-                      >
-                        <div className="w-5 h-5 bg-blue-600 rounded-full border-2 border-white shadow-lg" />
-                      </Marker>
-                    )}
-                  </Map>
-                </div>
-              ) : (
-                <p className="text-xs text-gray-400">Map unavailable — VITE_MAPBOX_TOKEN not set</p>
-              )}
+              <div className="rounded-lg overflow-hidden border" style={{ height: 220 }}>
+                <MapContainer
+                  center={DEFAULT_CENTER}
+                  zoom={13}
+                  style={{ width: '100%', height: '100%' }}
+                >
+                  <TileLayer
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                  />
+                  <PickerClickHandler onPick={handlePickerClick} />
+                  {/* Zone overlays for reference */}
+                  {zones.filter(z => z.geojson).map(z => (
+                    <GeoJSON
+                      key={z.id}
+                      data={{ type: 'Feature', geometry: z.geojson }}
+                      style={{ color: z.color, fillColor: z.color, fillOpacity: 0.12, weight: 1.5 }}
+                    />
+                  ))}
+                  {pickerPin && (
+                    <Marker
+                      position={[pickerPin.lat, pickerPin.lng]}
+                      icon={pickerIcon}
+                      draggable
+                      eventHandlers={{ dragend: (e) => handlePickerClick(e.target.getLatLng()) }}
+                    />
+                  )}
+                </MapContainer>
+              </div>
               {detectedZone && (
                 <p className="mt-1 text-xs text-gray-600">
                   Zone: <span className="font-semibold" style={{ color: detectedZone.color }}>{detectedZone.name}</span>
@@ -1081,37 +1053,7 @@ export default function Dashboard() {
 }
 ```
 
-**Note:** The `MapPanel.ZoneLayer` reference in the Add modal picker won't work as written — the zone overlays in the picker map need inline Source/Layer. See below for the fix.
-
-**Step 3: Fix the zone layer in the picker map**
-
-The Add modal map picker needs to show zone overlays inline. Replace the zone overlay comment block with:
-
-```jsx
-{/* Zone overlays in picker for reference */}
-{zones.filter(z => z.geojson).length > 0 && (
-  <source
-    id="picker-zones"
-    type="geojson"
-    data={{
-      type: 'FeatureCollection',
-      features: zones.filter(z => z.geojson).map(z => ({
-        type: 'Feature',
-        id: z.id,
-        properties: { color: z.color },
-        geometry: z.geojson,
-      })),
-    }}
-  >
-    <Layer id="picker-zone-fill" type="fill" paint={{ 'fill-color': ['get', 'color'], 'fill-opacity': 0.12 }} />
-    <Layer id="picker-zone-line" type="line" paint={{ 'line-color': ['get', 'color'], 'line-width': 1.5 }} />
-  </source>
-)}
-```
-
-Actually, react-map-gl uses `Source` and `Layer` (capitalized JSX components), not lowercase. Use the imports from `react-map-gl`. Remove the broken `MapPanel.ZoneLayer` reference and replace with the inline `Source` + `Layer` pattern shown above (with capital letters).
-
-**Step 4: Verify**
+**Step 3: Verify**
 
 Start frontend. Go to Dashboard:
 - Properties tab: list on left, map on right. Property pins appear colored by score.
@@ -1120,7 +1062,7 @@ Start frontend. Go to Dashboard:
 - Click a zone (if any drawn) → ZoneStatsSidebar slides in.
 - Click "+ Add Property" → modal with embedded map picker.
 
-**Step 5: Commit**
+**Step 4: Commit**
 ```bash
 git add frontend/src/pages/Dashboard.jsx
 git commit -m "feat: add split-panel map layout to Dashboard Properties and Finance tabs"
@@ -1136,90 +1078,83 @@ git commit -m "feat: add split-panel map layout to Dashboard Properties and Fina
 **Step 1: Create the page**
 
 ```jsx
-import { useState, useEffect, useCallback, useRef } from 'react';
-import Map, { Source, Layer, NavigationControl, useControl } from 'react-map-gl';
-import MapboxDraw from '@mapbox/mapbox-gl-draw';
+import { useState, useEffect, useRef } from 'react';
+import { MapContainer, TileLayer, GeoJSON, useMap } from 'react-leaflet';
+import '@geoman-io/leaflet-geoman-free';
 import { getZones, createZone, updateZone, deleteZone } from '../api';
 
-const TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
-const DEFAULT_CENTER = { longitude: -122.308, latitude: 47.655 };
+const DEFAULT_CENTER = [47.655, -122.308];
+const PRESET_COLORS  = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
 
-const PRESET_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
+// Inner component that mounts leaflet-geoman controls on the map
+function GeomanControl({ onZoneDrawn, onZoneEdited }) {
+  const map = useRef(null);
+  const mapInstance = useMap();
 
-// react-map-gl v7 control wrapper for MapboxDraw
-function DrawControl({ onDrawCreate, onDrawUpdate, onDrawDelete, drawRef }) {
-  useControl(
-    () => {
-      const draw = new MapboxDraw({
-        displayControlsDefault: false,
-        controls: { polygon: true, trash: true },
-      });
-      drawRef.current = draw;
-      return draw;
-    },
-    ({ map }) => {
-      map.on('draw.create', onDrawCreate);
-      map.on('draw.update', onDrawUpdate);
-      map.on('draw.delete', onDrawDelete);
-    },
-    ({ map }) => {
-      map.off('draw.create', onDrawCreate);
-      map.off('draw.update', onDrawUpdate);
-      map.off('draw.delete', onDrawDelete);
-    },
-    { position: 'top-left' }
-  );
+  useEffect(() => {
+    map.current = mapInstance;
+    mapInstance.pm.addControls({
+      position:         'topleft',
+      drawMarker:       false,
+      drawCircleMarker: false,
+      drawPolyline:     false,
+      drawRectangle:    true,
+      drawPolygon:      true,
+      drawCircle:       false,
+      editMode:         true,
+      dragMode:         true,
+      cutPolygon:       false,
+      removalMode:      true,
+    });
+
+    const handleCreate = (e) => {
+      const geometry = e.layer.toGeoJSON().geometry;
+      onZoneDrawn(geometry, e.layer);
+    };
+    const handleEdit = (e) => {
+      const geometry = e.layer.toGeoJSON().geometry;
+      onZoneEdited?.(geometry, e.layer);
+    };
+
+    mapInstance.on('pm:create', handleCreate);
+    mapInstance.on('pm:edit',   handleEdit);
+
+    return () => {
+      mapInstance.pm.removeControls();
+      mapInstance.off('pm:create', handleCreate);
+      mapInstance.off('pm:edit',   handleEdit);
+    };
+  }, [mapInstance, onZoneDrawn, onZoneEdited]);
+
   return null;
 }
 
 export default function ZonesSettings() {
-  const [zones,          setZones]         = useState([]);
-  const [loading,        setLoading]       = useState(true);
-  const [drawing,        setDrawing]       = useState(false);  // are we naming a new polygon?
-  const [editingZone,    setEditingZone]   = useState(null);   // zone being edited
-  const [pendingGeo,     setPendingGeo]    = useState(null);   // geometry from draw tool
-  const [nameInput,      setNameInput]     = useState('');
-  const [colorInput,     setColorInput]    = useState('#3B82F6');
-  const [saving,         setSaving]        = useState(false);
-  const drawRef = useRef(null);
+  const [zones,       setZones]      = useState([]);
+  const [loading,     setLoading]    = useState(true);
+  const [drawing,     setDrawing]    = useState(false);
+  const [editingZone, setEditingZone]= useState(null);
+  const [pendingGeo,  setPendingGeo] = useState(null);
+  const [pendingLayer,setPendingLayer]=useState(null); // temp Leaflet layer to remove on save/cancel
+  const [nameInput,   setNameInput]  = useState('');
+  const [colorInput,  setColorInput] = useState('#3B82F6');
+  const [saving,      setSaving]     = useState(false);
 
   useEffect(() => {
     getZones().then(zns => { setZones(zns); setLoading(false); });
   }, []);
 
-  // Build GeoJSON for display
-  const zonesGeoJSON = {
-    type: 'FeatureCollection',
-    features: zones.filter(z => z.geojson).map(z => ({
-      type: 'Feature',
-      id: z.id,
-      properties: { id: z.id, name: z.name, color: z.color },
-      geometry: z.geojson,
-    })),
+  const handleZoneDrawn = (geometry, layer) => {
+    setPendingGeo(geometry);
+    setPendingLayer(layer);
+    setDrawing(true);
+    setNameInput('');
+    setColorInput('#3B82F6');
   };
 
-  const onDrawCreate = useCallback((e) => {
-    const geometry = e.features[0]?.geometry;
-    if (geometry) {
-      setPendingGeo(geometry);
-      setDrawing(true);
-      setNameInput('');
-      setColorInput('#3B82F6');
-    }
-  }, []);
-
-  const onDrawUpdate = useCallback((e) => {
-    const geometry = e.features[0]?.geometry;
-    if (geometry && editingZone) {
-      setPendingGeo(geometry);
-    }
-  }, [editingZone]);
-
-  const onDrawDelete = useCallback(() => {
-    setPendingGeo(null);
-    setDrawing(false);
-    setEditingZone(null);
-  }, []);
+  const handleZoneEdited = (geometry) => {
+    if (editingZone) setPendingGeo(geometry);
+  };
 
   const handleSaveZone = async () => {
     if (!nameInput.trim() || !pendingGeo) return;
@@ -1232,11 +1167,10 @@ export default function ZonesSettings() {
         const created = await createZone({ name: nameInput, color: colorInput, geojson: pendingGeo });
         setZones(prev => [...prev, created]);
       }
-      // Clear draw tool
-      drawRef.current?.deleteAll();
-      setPendingGeo(null);
-      setDrawing(false);
-      setEditingZone(null);
+      // Remove temp draw layer (re-rendered via saved GeoJSON)
+      pendingLayer?.remove();
+      setPendingGeo(null); setPendingLayer(null);
+      setDrawing(false);   setEditingZone(null);
     } finally {
       setSaving(false);
     }
@@ -1248,15 +1182,6 @@ export default function ZonesSettings() {
     setColorInput(zone.color);
     setPendingGeo(zone.geojson);
     setDrawing(true);
-    // Load existing polygon into draw tool
-    if (drawRef.current) {
-      drawRef.current.deleteAll();
-      drawRef.current.add({
-        type: 'Feature',
-        geometry: zone.geojson,
-        properties: {},
-      });
-    }
   };
 
   const handleDeleteZone = async (id) => {
@@ -1266,23 +1191,16 @@ export default function ZonesSettings() {
   };
 
   const handleCancel = () => {
-    drawRef.current?.deleteAll();
-    setPendingGeo(null);
-    setDrawing(false);
-    setEditingZone(null);
+    pendingLayer?.remove();
+    setPendingGeo(null); setPendingLayer(null);
+    setDrawing(false);   setEditingZone(null);
   };
-
-  if (!TOKEN) return (
-    <div className="max-w-4xl mx-auto p-8">
-      <p className="text-red-500">Set VITE_MAPBOX_TOKEN to use Zone Management.</p>
-    </div>
-  );
 
   return (
     <div className="max-w-6xl mx-auto p-8 space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-blue-900">Zone Management</h1>
-        <p className="text-gray-500 text-sm mt-1">Draw neighborhood zones. Properties and announcements can be assigned to zones.</p>
+        <p className="text-gray-500 text-sm mt-1">Draw neighborhood zones. Properties and announcements can be targeted to zones.</p>
       </div>
 
       <div className="flex gap-6" style={{ height: 560 }}>
@@ -1310,37 +1228,31 @@ export default function ZonesSettings() {
             </ul>
           )}
 
-          {/* Name + color form (appears after drawing) */}
+          {/* Name + color form after drawing */}
           {drawing && (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-2 flex-shrink-0">
               <p className="text-xs font-semibold text-blue-800">{editingZone ? 'Edit Zone' : 'Name New Zone'}</p>
               <input
-                type="text"
-                placeholder="Zone name (e.g. North Quad)"
-                value={nameInput}
-                onChange={e => setNameInput(e.target.value)}
+                type="text" placeholder="Zone name (e.g. North Quad)"
+                value={nameInput} onChange={e => setNameInput(e.target.value)}
                 className="w-full border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
               />
               <div className="flex gap-1 flex-wrap">
                 {PRESET_COLORS.map(c => (
-                  <button
-                    key={c}
-                    onClick={() => setColorInput(c)}
+                  <button key={c} onClick={() => setColorInput(c)}
                     style={{ backgroundColor: c }}
                     className={`w-5 h-5 rounded-full border-2 ${colorInput === c ? 'border-gray-800' : 'border-transparent'}`}
                   />
                 ))}
               </div>
               <div className="flex gap-2">
-                <button
-                  onClick={handleSaveZone}
+                <button onClick={handleSaveZone}
                   disabled={saving || !nameInput.trim() || !pendingGeo}
                   className="flex-1 text-xs bg-blue-700 text-white rounded py-1.5 font-semibold hover:bg-blue-800 disabled:opacity-50"
                 >
                   {saving ? 'Saving...' : 'Save Zone'}
                 </button>
-                <button
-                  onClick={handleCancel}
+                <button onClick={handleCancel}
                   className="flex-1 text-xs bg-gray-100 text-gray-600 rounded py-1.5 hover:bg-gray-200"
                 >
                   Cancel
@@ -1350,43 +1262,32 @@ export default function ZonesSettings() {
           )}
         </div>
 
-        {/* Right: map with draw controls */}
+        {/* Right: map with geoman draw controls */}
         <div className="flex-1 rounded-xl overflow-hidden border">
-          <Map
-            mapboxAccessToken={TOKEN}
-            initialViewState={{ longitude: DEFAULT_CENTER.longitude, latitude: DEFAULT_CENTER.latitude, zoom: 13.5 }}
+          <MapContainer
+            center={DEFAULT_CENTER} zoom={13.5}
             style={{ width: '100%', height: '100%' }}
-            mapStyle="mapbox://styles/mapbox/streets-v12"
           >
-            <NavigationControl position="top-right" />
-            <DrawControl
-              onDrawCreate={onDrawCreate}
-              onDrawUpdate={onDrawUpdate}
-              onDrawDelete={onDrawDelete}
-              drawRef={drawRef}
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             />
+            <GeomanControl onZoneDrawn={handleZoneDrawn} onZoneEdited={handleZoneEdited} />
 
-            {/* Existing zones */}
-            {zonesGeoJSON.features.length > 0 && (
-              <Source id="zones" type="geojson" data={zonesGeoJSON}>
-                <Layer
-                  id="zone-fill"
-                  type="fill"
-                  paint={{ 'fill-color': ['get', 'color'], 'fill-opacity': 0.15 }}
-                />
-                <Layer
-                  id="zone-outline"
-                  type="line"
-                  paint={{ 'line-color': ['get', 'color'], 'line-width': 2 }}
-                />
-              </Source>
-            )}
-          </Map>
+            {/* Render saved zones */}
+            {zones.filter(z => z.geojson).map(z => (
+              <GeoJSON
+                key={`${z.id}-${z.color}`}
+                data={{ type: 'Feature', geometry: z.geojson }}
+                style={{ color: z.color, fillColor: z.color, fillOpacity: 0.15, weight: 2 }}
+              />
+            ))}
+          </MapContainer>
         </div>
       </div>
 
       <p className="text-xs text-gray-400">
-        Tip: Click the polygon icon in the top-left of the map to start drawing. Click vertices to define the zone boundary, then double-click to close the shape.
+        Tip: Click the polygon icon (▱) in the top-left toolbar to start drawing. Click to place vertices, then click the first vertex again to close. Double-click a saved zone to edit its shape.
       </p>
     </div>
   );
@@ -1396,7 +1297,7 @@ export default function ZonesSettings() {
 **Step 2: Commit**
 ```bash
 git add frontend/src/pages/ZonesSettings.jsx
-git commit -m "feat: add ZonesSettings page with mapbox-gl-draw polygon drawing"
+git commit -m "feat: add ZonesSettings page with leaflet-geoman polygon drawing"
 ```
 
 ---
@@ -1692,9 +1593,8 @@ git commit -m "feat: add zone targeting and zone badges to CommunityBoard"
 | `backend/src/index.js` | Register /api/zones route |
 | `backend/src/routes/properties.js` | Accept lat/lng/zone_id on create; include zone data in list |
 | `backend/src/routes/community.js` | Accept zone_id; filter email by zone; join zone in GET |
-| `frontend/package.json` | Add react-map-gl, mapbox-gl, mapbox-gl-draw, turf |
-| `frontend/vite.config.js` | Exclude mapbox-gl from optimizeDeps |
-| `frontend/src/main.jsx` | Import mapbox-gl + draw CSS |
+| `frontend/package.json` | Add leaflet, react-leaflet, leaflet-geoman, turf |
+| `frontend/src/main.jsx` | Import leaflet CSS + fix broken Vite marker icons |
 | `frontend/src/api.js` | Add getZones, createZone, updateZone, deleteZone |
 | `frontend/src/components/MapPanel.jsx` | New: map with pins + zone overlays |
 | `frontend/src/components/ZoneStatsSidebar.jsx` | New: zone stats sidebar |

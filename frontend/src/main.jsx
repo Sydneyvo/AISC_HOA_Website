@@ -6,6 +6,8 @@ import App from './App.jsx';
 import './index.css';
 import 'leaflet/dist/leaflet.css';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
+import 'react-leaflet-cluster/dist/assets/MarkerCluster.css';
+import 'react-leaflet-cluster/dist/assets/MarkerCluster.Default.css';
 
 // Fix Leaflet default marker icon broken in Vite (known issue)
 import L from 'leaflet';

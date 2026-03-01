@@ -62,6 +62,16 @@ export default function PropertyDetail() {
     reload();
   };
 
+  const handleReopened = (violationId) => {
+    setProperty(prev => ({
+      ...prev,
+      violations: prev.violations.map(v =>
+        v.id === violationId ? { ...v, status: 'open' } : v
+      ),
+    }));
+    reload();
+  };
+
   const handlePdfUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -207,9 +217,9 @@ export default function PropertyDetail() {
           {totalCount > 0 && (
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex gap-1">
-                {['all', 'open', 'resolved'].map(s => (
+                {['all', 'open', 'pending_review', 'resolved'].map(s => (
                   <button key={s} className={pill(statusFilter === s)} onClick={() => setStatusFilter(s)}>
-                    {s.charAt(0).toUpperCase() + s.slice(1)}
+                    {s === 'pending_review' ? 'Pending Review' : s.charAt(0).toUpperCase() + s.slice(1)}
                   </button>
                 ))}
               </div>
@@ -264,7 +274,7 @@ export default function PropertyDetail() {
               </thead>
               <tbody>
                 {filteredViolations.map(v => (
-                  <ViolationRow key={v.id} violation={v} onResolved={handleResolved} />
+                  <ViolationRow key={v.id} violation={v} onResolved={handleResolved} onReopened={handleReopened} />
                 ))}
               </tbody>
             </table>

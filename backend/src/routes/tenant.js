@@ -1,9 +1,12 @@
 const express = require('express');
+const multer  = require('multer');
 const db = require('../db');
 const { createClerkClient } = require('@clerk/express');
 const { recalcScore } = require('../services/scoring');
+const { uploadToBlob } = require('../services/azure');
 
-const router = express.Router();
+const router   = express.Router();
+const upload   = multer({ storage: multer.memoryStorage() });
 const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
 
 async function getEmailFromReq(req) {
@@ -35,6 +38,7 @@ router.get('/me', async (req, res) => {
            'deadline_days',  v.deadline_days,
            'status',         v.status,
            'image_url',      v.image_url,
+           'fix_photo_url',  v.fix_photo_url,
            'fine_amount',    v.fine_amount,
            'notice_sent_at', v.notice_sent_at,
            'resolved_at',    v.resolved_at,
@@ -78,8 +82,8 @@ router.get('/me', async (req, res) => {
 });
 
 // PATCH /api/tenant/violations/:id/flag-fixed
-// Tenant marks their violation as pending_review
-router.patch('/violations/:id/flag-fixed', async (req, res) => {
+// Tenant marks their violation as pending_review, optionally attaching a fix photo
+router.patch('/violations/:id/flag-fixed', upload.single('image'), async (req, res) => {
   try {
     const email = await getEmailFromReq(req);
 
@@ -89,11 +93,17 @@ router.patch('/violations/:id/flag-fixed', async (req, res) => {
     if (!propRows.length) return res.status(403).json({ error: 'No property found for this user' });
     const propertyId = propRows[0].id;
 
+    let fix_photo_url = null;
+    if (req.file) {
+      fix_photo_url = await uploadToBlob(req.file.buffer, req.file.originalname, 'violationscont');
+    }
+
     const { rows } = await db.query(
-      `UPDATE violations SET status = 'pending_review'
+      `UPDATE violations
+       SET status = 'pending_review', fix_photo_url = COALESCE($3, fix_photo_url)
        WHERE id = $1 AND property_id = $2 AND status = 'open'
        RETURNING *`,
-      [req.params.id, propertyId]
+      [req.params.id, propertyId, fix_photo_url]
     );
     if (!rows.length) return res.status(404).json({ error: 'Violation not found or already actioned' });
     res.json(rows[0]);

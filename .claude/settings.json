@@ -1,4 +1,11 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(npm install leaflet react-leaflet@4 @geoman-io/leaflet-geoman-free @turf/boolean-point-in-polygon)",
+      "Bash(git add src/api.js)",
+      "Bash(git commit -m \"feat: add zones CRUD helpers to api.js\")"
+    ]
+  },
   "enabledPlugins": {
     "code-review@claude-plugins-official": true,
     "claude-md-management@claude-plugins-official": true,

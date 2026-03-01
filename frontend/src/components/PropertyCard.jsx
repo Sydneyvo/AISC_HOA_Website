@@ -1,12 +1,14 @@
 import { useNavigate } from 'react-router-dom';
 import ComplianceScore from './ComplianceScore';
 
-export default function PropertyCard({ property, onDelete }) {
+export default function PropertyCard({ property, onDelete, isHighlighted }) {
   const navigate = useNavigate();
 
   return (
     <div
-      className="bg-white border rounded-xl p-5 flex items-center gap-4 shadow-sm hover:shadow-md transition cursor-pointer group"
+      className={`bg-white border rounded-xl p-5 flex items-center gap-4 shadow-sm hover:shadow-md transition cursor-pointer group ${
+        isHighlighted ? 'ring-2 ring-blue-400 ring-inset' : ''
+      }`}
       onClick={() => navigate(`/properties/${property.id}`)}
     >
       <ComplianceScore score={property.combined_score ?? property.compliance_score} />
