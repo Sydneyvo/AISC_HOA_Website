@@ -69,3 +69,40 @@ ALTER TABLE properties
 
 ALTER TABLE community_posts
   ADD COLUMN IF NOT EXISTS zone_id INTEGER REFERENCES zones(id) ON DELETE SET NULL;
+
+-- Backfill lat/lng for the original 3 seed properties (idempotent: only runs when NULL)
+UPDATE properties SET latitude = 47.6580, longitude = -122.3140
+  WHERE owner_email = 'john@example.com'  AND latitude IS NULL;
+UPDATE properties SET latitude = 47.6610, longitude = -122.3170
+  WHERE owner_email = 'maria@example.com' AND latitude IS NULL;
+UPDATE properties SET latitude = 47.6490, longitude = -122.3030
+  WHERE owner_email = 'david@example.com' AND latitude IS NULL;
+
+-- Seed additional UW Seattle demo properties (idempotent via WHERE NOT EXISTS)
+INSERT INTO properties (address, owner_name, owner_email, owner_phone, resident_since, land_area_sqft, compliance_score, combined_score, latitude, longitude)
+SELECT '112 NE Boat St, Seattle, WA', 'Sarah Kim', 'sarah@example.com', '555-0103', 2020, 3800, 85, 82, 47.6570, -122.3120
+WHERE NOT EXISTS (SELECT 1 FROM properties WHERE owner_email = 'sarah@example.com');
+
+INSERT INTO properties (address, owner_name, owner_email, owner_phone, resident_since, land_area_sqft, compliance_score, combined_score, latitude, longitude)
+SELECT '360 NE 45th St, Seattle, WA', 'Tom Nguyen', 'tom@example.com', '555-0104', 2019, 6200, 92, 89, 47.6630, -122.3110
+WHERE NOT EXISTS (SELECT 1 FROM properties WHERE owner_email = 'tom@example.com');
+
+INSERT INTO properties (address, owner_name, owner_email, owner_phone, resident_since, land_area_sqft, compliance_score, combined_score, latitude, longitude)
+SELECT '321 E Shelby St, Seattle, WA', 'Priya Patel', 'priya@example.com', '555-0106', 2022, 3200, 55, 50, 47.6460, -122.2990
+WHERE NOT EXISTS (SELECT 1 FROM properties WHERE owner_email = 'priya@example.com');
+
+INSERT INTO properties (address, owner_name, owner_email, owner_phone, resident_since, land_area_sqft, compliance_score, combined_score, latitude, longitude)
+SELECT '248 Fuhrman Ave E, Seattle, WA', 'Carlos Rivera', 'carlos@example.com', '555-0107', 2017, 4900, 79, 74, 47.6440, -122.2960
+WHERE NOT EXISTS (SELECT 1 FROM properties WHERE owner_email = 'carlos@example.com');
+
+INSERT INTO properties (address, owner_name, owner_email, owner_phone, resident_since, land_area_sqft, compliance_score, combined_score, latitude, longitude)
+SELECT '501 Boyer Ave E, Seattle, WA', 'Amy Chen', 'amy@example.com', '555-0108', 2016, 5100, 20, 15, 47.6470, -122.3010
+WHERE NOT EXISTS (SELECT 1 FROM properties WHERE owner_email = 'amy@example.com');
+
+INSERT INTO properties (address, owner_name, owner_email, owner_phone, resident_since, land_area_sqft, compliance_score, combined_score, latitude, longitude)
+SELECT '654 17th Ave NE, Seattle, WA', 'Mike Johnson', 'mike@example.com', '555-0109', 2023, 4400, 30, 25, 47.6520, -122.3090
+WHERE NOT EXISTS (SELECT 1 FROM properties WHERE owner_email = 'mike@example.com');
+
+INSERT INTO properties (address, owner_name, owner_email, owner_phone, resident_since, land_area_sqft, compliance_score, combined_score, latitude, longitude)
+SELECT '987 NE 15th Ave, Seattle, WA', 'Lisa Wang', 'lisa@example.com', '555-0110', 2020, 5800, 95, 91, 47.6500, -122.3060
+WHERE NOT EXISTS (SELECT 1 FROM properties WHERE owner_email = 'lisa@example.com');
