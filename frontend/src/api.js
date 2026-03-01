@@ -134,3 +134,24 @@ export const reopenViolation = async (id) =>
     method: 'PATCH',
     headers: await authHeaders(),
   }).then(json);
+
+// Community board
+export const getCommunityPosts = async (category = 'all') => {
+  const params = category !== 'all' ? `?category=${category}` : '';
+  return fetch(`${BASE}/api/community${params}`, {
+    headers: await authHeaders(),
+  }).then(json);
+};
+
+export const createCommunityPost = async (formData) =>
+  fetch(`${BASE}/api/community`, {
+    method: 'POST',
+    headers: await authHeaders(), // no Content-Type — browser sets it with boundary
+    body: formData,
+  }).then(json);
+
+export const deleteCommunityPost = async (id) =>
+  fetch(`${BASE}/api/community/${id}`, {
+    method: 'DELETE',
+    headers: await authHeaders(),
+  }).then(json);
