@@ -7,20 +7,20 @@ const DEFAULT_CENTER = [47.655, -122.308];
 
 // Create a colored circular DivIcon for property pins
 function makePinIcon(color, isActive) {
-  const size = isActive ? 20 : 14;
+  const size = isActive ? 22 : 16;
   return L.divIcon({
     className: '',
     html: `<div style="
       width:${size}px;height:${size}px;
       background:${color};
       border-radius:50%;
-      border:2px solid white;
-      box-shadow:0 1px 4px rgba(0,0,0,0.35);
-      ${isActive ? 'outline:3px solid #60A5FA;outline-offset:1px;' : ''}
+      border:2.5px solid white;
+      box-shadow:0 2px 6px rgba(0,0,0,0.3),0 0 0 ${isActive ? '4px' : '0'} ${color}44;
+      transition:all 0.15s;
     "></div>`,
     iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
-    popupAnchor: [0, -(size / 2 + 4)],
+    popupAnchor: [0, -(size / 2 + 6)],
   });
 }
 
@@ -76,8 +76,8 @@ export default function MapPanel({ properties, zones, mode, highlightedId, onPro
         scrollWheelZoom={true}
       >
         <TileLayer
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
         />
 
         {/* Zone polygon overlays */}

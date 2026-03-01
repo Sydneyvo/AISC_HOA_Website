@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, GeoJSON, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, GeoJSON, Circle, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
 import { getProperties, getViolationsTimeline, createProperty, deleteProperty, getFinance, getZones } from '../api';
@@ -235,7 +235,7 @@ export default function Dashboard() {
 
       {/* Add Property Modal */}
       {showAdd && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[1200] p-4">
           <form
             onSubmit={handleAdd}
             className="bg-white rounded-xl p-6 w-full max-w-lg space-y-4 shadow-xl overflow-y-auto max-h-[90vh]"
@@ -267,15 +267,15 @@ export default function Dashboard() {
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Location <span className="text-gray-400 font-normal">(click map to place pin)</span>
               </label>
-              <div className="rounded-lg overflow-hidden border" style={{ height: 220 }}>
+              <div className="rounded-lg overflow-hidden border shadow-sm" style={{ height: 240 }}>
                 <MapContainer
                   center={DEFAULT_CENTER}
-                  zoom={13}
+                  zoom={15}
                   style={{ width: '100%', height: '100%' }}
                 >
                   <TileLayer
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+                    url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
                   />
                   <PickerClickHandler onPick={handlePickerClick} />
                   {zones.filter(z => z.geojson).map(z => (
@@ -286,12 +286,21 @@ export default function Dashboard() {
                     />
                   ))}
                   {pickerPin && (
-                    <Marker
-                      position={[pickerPin.lat, pickerPin.lng]}
-                      icon={pickerIcon}
-                      draggable
-                      eventHandlers={{ dragend: (e) => handlePickerClick(e.target.getLatLng()) }}
-                    />
+                    <>
+                      <Marker
+                        position={[pickerPin.lat, pickerPin.lng]}
+                        icon={pickerIcon}
+                        draggable
+                        eventHandlers={{ dragend: (e) => handlePickerClick(e.target.getLatLng()) }}
+                      />
+                      {form.land_area_sqft > 0 && (
+                        <Circle
+                          center={[pickerPin.lat, pickerPin.lng]}
+                          radius={Math.sqrt((parseFloat(form.land_area_sqft) * 0.0929) / Math.PI)}
+                          pathOptions={{ color: '#2563EB', fillColor: '#2563EB', fillOpacity: 0.15, weight: 1.5 }}
+                        />
+                      )}
+                    </>
                   )}
                 </MapContainer>
               </div>
