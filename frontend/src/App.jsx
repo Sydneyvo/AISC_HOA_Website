@@ -9,6 +9,7 @@ import ViolationEdit   from './pages/ViolationEdit';
 import LoginPage       from './pages/LoginPage';
 import TenantDashboard from './pages/TenantDashboard';
 import CommunityPage   from './pages/CommunityPage';
+import ZonesSettings   from './pages/ZonesSettings';
 
 // Sets the token getter then immediately resolves the user's role
 function AuthBridge({ onRoleLoaded }) {
@@ -52,6 +53,9 @@ export default function App() {
                     <span className="absolute -top-1 -right-2 w-2 h-2 bg-red-500 rounded-full" />
                   )}
                 </a>
+                <a href="/settings/zones" className="text-sm font-medium hover:opacity-80">
+                  Zones
+                </a>
               </div>
               <UserButton />
             </nav>
@@ -61,6 +65,7 @@ export default function App() {
               <Route path="/properties/:id/violations/new"          element={<ViolationForm />} />
               <Route path="/properties/:id/violations/:violId/edit" element={<ViolationEdit />} />
               <Route path="/community"                              element={<CommunityPage onViewed={() => setCommunityUnread(false)} />} />
+              <Route path="/settings/zones"                         element={<ZonesSettings />} />
               <Route path="/login"                                  element={<Navigate to="/" replace />} />
             </Routes>
           </div>
