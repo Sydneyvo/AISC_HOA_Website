@@ -8,6 +8,7 @@ const blobServiceClient = BlobServiceClient.fromConnectionString(
 // Upload any file buffer to a given container, returns the public URL
 async function uploadToBlob(fileBuffer, originalFilename, containerName) {
   const containerClient = blobServiceClient.getContainerClient(containerName);
+  await containerClient.createIfNotExists({ access: 'blob' });
   const extension  = originalFilename.split('.').pop();
   const blobName   = `${uuidv4()}.${extension}`;   // unique name — no collisions
   const blobClient = containerClient.getBlockBlobClient(blobName);
