@@ -9,8 +9,12 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.61.3",
+    "@geoman-io/leaflet-geoman-free": "^2.19.2",
+    "@turf/boolean-point-in-polygon": "^7.3.4",
+    "leaflet": "^1.9.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-leaflet": "^4.2.1",
     "react-router-dom": "^6.28.0",
     "recharts": "^2.13.3"
   },
