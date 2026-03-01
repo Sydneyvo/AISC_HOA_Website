@@ -66,3 +66,13 @@ export const uploadRulesPdf = (propertyId, file) => {
     body: form
   }).then(json);
 };
+
+// Finance
+export const getFinance = () =>
+  fetch(`${BASE}/api/finance`).then(json);
+
+export const getPropertyBills = (propertyId) =>
+  fetch(`${BASE}/api/finance/property/${propertyId}`).then(json);
+
+export const payBill = (billId) =>
+  fetch(`${BASE}/api/finance/${billId}/pay`, { method: 'PATCH' }).then(json);

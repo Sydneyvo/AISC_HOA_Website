@@ -1,27 +1,37 @@
 import { useState, useEffect } from 'react';
-import { getProperties, getViolationsTimeline, createProperty, deleteProperty } from '../api';
+import { getProperties, getViolationsTimeline, createProperty, deleteProperty, getFinance } from '../api';
 import PropertyCard       from '../components/PropertyCard';
 import ViolationsTimeline from '../components/ViolationsTimeline';
 import AvgScoreRing       from '../components/AvgScoreRing';
+import FinanceTable       from '../components/FinanceTable';
 
 const EMPTY_FORM = {
-  address: '', owner_name: '', owner_email: '', owner_phone: '', resident_since: ''
+  address: '', owner_name: '', owner_email: '', owner_phone: '', resident_since: '', land_area_sqft: ''
 };
 
 export default function Dashboard() {
-  const [properties, setProperties] = useState([]);
-  const [timeline, setTimeline]     = useState([]);
-  const [search, setSearch]         = useState('');
-  const [showAdd, setShowAdd]       = useState(false);
-  const [form, setForm]             = useState(EMPTY_FORM);
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState(null);
+  const [activeTab, setActiveTab]     = useState('properties');
+  const [properties, setProperties]   = useState([]);
+  const [timeline, setTimeline]       = useState([]);
+  const [financeData, setFinanceData] = useState(null);
+  const [search, setSearch]           = useState('');
+  const [showAdd, setShowAdd]         = useState(false);
+  const [form, setForm]               = useState(EMPTY_FORM);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState(null);
 
   useEffect(() => {
     Promise.all([getProperties(), getViolationsTimeline()])
       .then(([props, tl]) => { setProperties(props); setTimeline(tl); setLoading(false); })
       .catch(err => { setError(err.message); setLoading(false); });
   }, []);
+
+  // Lazy-load finance data when tab is first opened
+  useEffect(() => {
+    if (activeTab === 'finance' && !financeData) {
+      getFinance().then(setFinanceData).catch(err => console.error('Finance load error:', err.message));
+    }
+  }, [activeTab, financeData]);
 
   const filtered = properties.filter(p =>
     p.address.toLowerCase().includes(search.toLowerCase()) ||
@@ -30,7 +40,7 @@ export default function Dashboard() {
 
   const openCount = properties.filter(p => parseInt(p.open_violations) > 0).length;
   const avgScore  = properties.length
-    ? Math.round(properties.reduce((s, p) => s + p.compliance_score, 0) / properties.length)
+    ? Math.round(properties.reduce((s, p) => s + (p.combined_score ?? p.compliance_score), 0) / properties.length)
     : 100;
 
   const handleAdd = async (e) => {
@@ -45,6 +55,10 @@ export default function Dashboard() {
     if (!window.confirm('Delete this property and all its violations?')) return;
     await deleteProperty(id);
     setProperties(prev => prev.filter(p => p.id !== id));
+  };
+
+  const handleBillPaid = () => {
+    getFinance().then(setFinanceData);
   };
 
   if (loading) return <div className="p-8 text-gray-400">Loading properties...</div>;
@@ -73,28 +87,50 @@ export default function Dashboard() {
         </button>
       </div>
 
-      {/* Timeline chart */}
-      {timeline.length > 0 && <ViolationsTimeline violations={timeline} />}
-
-      {/* Search */}
-      <input
-        className="w-full border rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-        placeholder="Search by address or owner name..."
-        value={search}
-        onChange={e => setSearch(e.target.value)}
-      />
-
-      {/* Property cards */}
-      <div className="space-y-3">
-        {filtered.map(p => (
-          <PropertyCard key={p.id} property={p} onDelete={handleDelete} />
+      {/* Tab switcher */}
+      <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
+        {[['properties', 'Properties'], ['finance', 'Finance']].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`px-5 py-2 rounded-md text-sm font-semibold transition ${
+              activeTab === key
+                ? 'bg-white text-blue-700 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {label}
+          </button>
         ))}
-        {filtered.length === 0 && (
-          <p className="text-center text-gray-400 py-12">
-            {search ? 'No properties match your search.' : 'No properties yet. Add one above.'}
-          </p>
-        )}
       </div>
+
+      {activeTab === 'properties' && (
+        <>
+          {timeline.length > 0 && <ViolationsTimeline violations={timeline} />}
+
+          <input
+            className="w-full border rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+            placeholder="Search by address or owner name..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+
+          <div className="space-y-3">
+            {filtered.map(p => (
+              <PropertyCard key={p.id} property={p} onDelete={handleDelete} />
+            ))}
+            {filtered.length === 0 && (
+              <p className="text-center text-gray-400 py-12">
+                {search ? 'No properties match your search.' : 'No properties yet. Add one above.'}
+              </p>
+            )}
+          </div>
+        </>
+      )}
+
+      {activeTab === 'finance' && (
+        <FinanceTable data={financeData} onBillPaid={handleBillPaid} />
+      )}
 
       {/* Add Property Modal */}
       {showAdd && (
@@ -106,11 +142,12 @@ export default function Dashboard() {
             <h2 className="text-xl font-bold text-blue-900">Add Property</h2>
 
             {[
-              { name: 'address',       label: 'Address',              required: true },
-              { name: 'owner_name',    label: 'Owner Name',           required: true },
-              { name: 'owner_email',   label: 'Owner Email',          required: true, type: 'email' },
-              { name: 'owner_phone',   label: 'Phone',                required: false },
+              { name: 'address',        label: 'Address',               required: true },
+              { name: 'owner_name',     label: 'Owner Name',            required: true },
+              { name: 'owner_email',    label: 'Owner Email',           required: true, type: 'email' },
+              { name: 'owner_phone',    label: 'Phone',                 required: false },
               { name: 'resident_since', label: 'Resident Since (year)', required: false, type: 'number' },
+              { name: 'land_area_sqft', label: 'Land Area (sq ft)',     required: true,  type: 'number' },
             ].map(({ name, label, required, type = 'text' }) => (
               <div key={name}>
                 <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>

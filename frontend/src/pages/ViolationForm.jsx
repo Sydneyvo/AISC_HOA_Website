@@ -11,9 +11,16 @@ const SEVERITY_STYLES = {
   high:   'bg-red-100 text-red-800 border-red-300',
 };
 
+const FINE_BASE = { low: 50, medium: 100, high: 200 };
+function estimateFine(severity, combinedScore) {
+  const base = FINE_BASE[severity] ?? 50;
+  const mult = combinedScore >= 80 ? 1.0 : combinedScore >= 60 ? 1.25 : combinedScore >= 40 ? 1.5 : 2.0;
+  return (base * mult).toFixed(2);
+}
+
 // ─── State B: the review + edit form shown after AI analysis ─────────────────
 
-function ReviewForm({ analysis, imageUrl, propertyId, navigate }) {
+function ReviewForm({ analysis, imageUrl, propertyId, navigate, propertyCombinedScore }) {
   const [form, setForm] = useState({
     category:      analysis.category     || 'other',
     severity:      analysis.severity     || 'low',
@@ -111,6 +118,13 @@ function ReviewForm({ analysis, imageUrl, propertyId, navigate }) {
                 </button>
               ))}
             </div>
+            <p className="text-xs text-gray-500 mt-2 bg-gray-50 rounded-lg px-3 py-2">
+              Estimated fine at current property score ({propertyCombinedScore}):
+              {' '}<strong className="text-gray-800">${estimateFine(form.severity, propertyCombinedScore)}</strong>
+              {propertyCombinedScore < 80 && (
+                <span className="text-orange-600"> (multiplier applied due to low score)</span>
+              )}
+            </p>
           </div>
 
           {/* Text fields */}
@@ -174,12 +188,13 @@ export default function ViolationForm() {
   const { id: propertyId } = useParams();
   const navigate           = useNavigate();
 
-  const [file, setFile]         = useState(null);
-  const [preview, setPreview]   = useState(null);
-  const [hint, setHint]         = useState('');
-  const [loading, setLoading]   = useState(false);
-  const [analysis, setAnalysis] = useState(null);
-  const [imageUrl, setImageUrl] = useState('');
+  const [file, setFile]                       = useState(null);
+  const [preview, setPreview]                 = useState(null);
+  const [hint, setHint]                       = useState('');
+  const [loading, setLoading]                 = useState(false);
+  const [analysis, setAnalysis]               = useState(null);
+  const [imageUrl, setImageUrl]               = useState('');
+  const [propertyCombinedScore, setPropertyCombinedScore] = useState(100);
 
   const handleFile = (e) => {
     const f = e.target.files[0];
@@ -202,6 +217,7 @@ export default function ViolationForm() {
     try {
       const result = await analyzeViolation(file, propertyId, hint);
       setImageUrl(result.image_url);
+      setPropertyCombinedScore(result.property_combined_score ?? 100);
       setAnalysis(result);
     } catch (e) {
       alert('Analysis failed: ' + e.message);
@@ -218,6 +234,7 @@ export default function ViolationForm() {
         imageUrl={imageUrl}
         propertyId={propertyId}
         navigate={navigate}
+        propertyCombinedScore={propertyCombinedScore}
       />
     );
   }
