@@ -162,3 +162,29 @@ export const getCommunityUnreadCount = async (since) => {
     headers: await authHeaders(),
   }).then(json);
 };
+
+// Zones
+export const getZones = async () =>
+  fetch(`${BASE}/api/zones`, {
+    headers: await authHeaders(),
+  }).then(json);
+
+export const createZone = async (data) =>
+  fetch(`${BASE}/api/zones`, {
+    method: 'POST',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(data),
+  }).then(json);
+
+export const updateZone = async (id, data) =>
+  fetch(`${BASE}/api/zones/${id}`, {
+    method: 'PUT',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(data),
+  }).then(json);
+
+export const deleteZone = async (id) =>
+  fetch(`${BASE}/api/zones/${id}`, {
+    method: 'DELETE',
+    headers: await authHeaders(),
+  }).then(json);
